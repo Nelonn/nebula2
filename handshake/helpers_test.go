@@ -78,6 +78,9 @@ func initiateHandshake(
 		return initM, respM, nil, nil, merr
 	}
 	resp, respResult, err = respM.ProcessPacket(nil, msg1)
+	if resp != nil && len(resp) > 4 {
+		resp = resp[4:] // strip initiator_index prefix for callers that use it directly
+	}
 	return
 }
 
@@ -116,7 +119,8 @@ func doFullHandshake(
 	require.NotNil(t, respResult)
 	require.NotEmpty(t, resp)
 
-	_, initResult, err = initM.ProcessPacket(nil, resp)
+	// Strip the 4-byte initiator_index prefix from msg2
+	_, initResult, err = initM.ProcessPacket(nil, resp[4:])
 	require.NoError(t, err)
 	require.NotNil(t, initResult)
 

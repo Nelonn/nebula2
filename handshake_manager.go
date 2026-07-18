@@ -16,6 +16,7 @@ import (
 	"github.com/slackhq/nebula/cert"
 	"github.com/slackhq/nebula/handshake"
 	"github.com/slackhq/nebula/header"
+	"github.com/slackhq/nebula/hpke"
 	"github.com/slackhq/nebula/udp"
 )
 
@@ -149,49 +150,64 @@ func (hm *HandshakeManager) Run(ctx context.Context) {
 	}
 }
 
-func (hm *HandshakeManager) HandleIncoming(via ViaSender, packet []byte, h *header.H) {
-	// Gate on known handshake subtypes. Unknown subtypes (or future ones we
-	// don't yet support) are dropped here rather than silently routed through
-	// the IX path. Add a case when introducing a new pattern.
-	switch h.Subtype {
-	case header.HandshakeIXPSK0, header.HandshakeHPKE0:
-		// supported
-	default:
-		hm.l.Debug("dropping handshake with unsupported subtype",
-			"from", via, "subtype", h.Subtype)
-		return
+// TrialDecap attempts to interpret a headerless packet as an HPKE handshake
+// msg1: [enc] + [ciphertext]. Returns true if decap succeeded and a handshake was initiated.
+func (hm *HandshakeManager) TrialDecap(via ViaSender, packet []byte) bool {
+	cs := hm.f.pki.getCertState()
+	cred := cs.GetCredential(cert.Version3)
+	if cred == nil {
+		cred = cs.GetCredential(cert.Version2)
+	}
+	if cred == nil {
+		return false
+	}
+	suite := cred.HPKESuite
+	if suite == nil {
+		return false
 	}
 
-	// First remote allow list check before we know the vpnIp
+	encLen := suite.KEM.EncLen()
+	if len(packet) < encLen+16 {
+		return false
+	}
+
 	if !via.IsRelayed {
 		if !hm.lightHouse.GetRemoteAllowList().AllowUnknownVpnAddr(via.UdpAddr.Addr()) {
-			hm.l.Debug("lighthouse.remote_allow_list denied incoming handshake", "from", via)
-			return
+			return false
 		}
 	}
 
-	// First message of a new handshake. The wire format requires RemoteIndex
-	// to be zero here (the initiator has no responder index to fill in yet),
-	// and generateIndex never allocates 0, so any non-zero RemoteIndex on a
-	// stage-1 packet is malformed or someone probing for an index collision.
-	// Drop without paying the cost of running noise on a pending Machine.
-	if h.MessageCounter == 1 {
-		if h.RemoteIndex != 0 {
-			hm.l.Debug("dropping stage-1 handshake with non-zero RemoteIndex",
-				"from", via, "remoteIndex", h.RemoteIndex)
-			return
-		}
-		hm.beginHandshake(via, packet, h)
-		return
+	enc := packet[:encLen]
+	ct := packet[encLen:]
+
+	ctx, err := hpke.SetupBaseR(enc, cred.HPKEPriv, []byte("nebula-hpke-msg1"), suite)
+	if err != nil {
+		return false
+	}
+	msg, err := ctx.Open(nil, ct)
+	if err != nil {
+		return false
 	}
 
-	// Continuation message must match a pending handshake by index.
-	// Anything else is an orphaned packet (e.g., late retransmit after
-	// timeout) and is dropped.
-	if hh := hm.queryIndex(h.RemoteIndex); hh != nil {
-		hm.continueHandshake(via, hh, packet)
+	payload, pErr := handshake.UnmarshalPayload(msg)
+	if pErr != nil || len(payload.Cert) == 0 {
+		return false
+	}
+
+	hm.beginHandshake(via, packet)
+	return true
+}
+
+// HandleIncoming processes a handshake continuation message (msg2).
+// The packet is [initiator_index(4)] + [enc] + [ciphertext].
+// The outside layer strips the 4-byte prefix and looks up the pending handshake
+// by initiator_index before calling this.
+func (hm *HandshakeManager) HandleIncoming(via ViaSender, packet []byte, pendingIndex uint32) {
+	hh := hm.queryIndex(pendingIndex)
+	if hh == nil {
 		return
 	}
+	hm.continueHandshake(via, hh, packet)
 }
 
 func (hm *HandshakeManager) NextOutboundHandshakeTimerTick(now time.Time) {
@@ -701,10 +717,9 @@ func (hm *HandshakeManager) buildStage0Packet(hh *HandshakeHostInfo) bool {
 	return true
 }
 
-// beginHandshake handles an incoming handshake packet that doesn't match any
-// existing pending handshake. It creates a new responder Machine and processes
-// the first message.
-func (hm *HandshakeManager) beginHandshake(via ViaSender, packet []byte, h *header.H) {
+// beginHandshake handles an incoming headerless HPKE handshake msg1 packet.
+// packet is [enc] + [ciphertext].
+func (hm *HandshakeManager) beginHandshake(via ViaSender, packet []byte) {
 	f := hm.f
 	cs := f.pki.getCertState()
 
@@ -733,12 +748,6 @@ func (hm *HandshakeManager) beginHandshake(via ViaSender, packet []byte, h *head
 	}
 
 	if result == nil {
-		// Multi-message pattern: the responder Machine would need to be
-		// registered in hm.indexes so a future inbound packet finds it via
-		// continueHandshake. The current manager doesn't do that yet, so
-		// fail loudly rather than silently dropping the in-flight handshake.
-		// TODO: support multi-message responder flows (XX, pqIX, etc.).
-		// See also the IX-shaped cipher key assignment in handshake.Machine.
 		f.l.Error("multi-message handshake responder is not supported",
 			"from", via, "error", handshake.ErrMultiMessageUnsupported)
 		return
@@ -750,7 +759,6 @@ func (hm *HandshakeManager) beginHandshake(via ViaSender, packet []byte, h *head
 		return
 	}
 
-	// Validate peer identity
 	vpnAddrs, anyVpnAddrsInCommon, ok := hm.validatePeerCert(via, remoteCert)
 	if !ok {
 		return
@@ -783,14 +791,12 @@ func (hm *HandshakeManager) beginHandshake(via ViaSender, packet []byte, h *head
 		"issuer", remoteCert.Certificate.Issuer(),
 		"initiatorIndex", result.RemoteIndex,
 		"responderIndex", result.LocalIndex,
-		"handshake", m{"stage": uint64(machine.MessageIndex()), "style": header.SubTypeName(header.Handshake, machine.Subtype())},
+		"handshake", m{"stage": uint64(machine.MessageIndex()), "style": "hpke0"},
 	)
 
-	// packet aliases the listener's incoming buffer, so this copy must stay.
-	hostinfo.HandshakePacket[handshakePacketStage0] = make([]byte, len(packet[header.Len:]))
-	copy(hostinfo.HandshakePacket[handshakePacketStage0], packet[header.Len:])
+	hostinfo.HandshakePacket[handshakePacketStage0] = make([]byte, len(packet))
+	copy(hostinfo.HandshakePacket[handshakePacketStage0], packet)
 
-	// response was freshly allocated by ProcessPacket; safe to retain directly.
 	if response != nil {
 		hostinfo.HandshakePacket[handshakePacketStage2] = response
 	}
@@ -1055,11 +1061,8 @@ func (hm *HandshakeManager) sendHandshakeResponse(via ViaSender, msg []byte, hos
 	}
 
 	f := hm.f
-	f.messageMetrics.Tx(header.Handshake, header.MessageSubType(msg[1]), 1)
+	f.messageMetrics.Tx(header.Handshake, header.HandshakeHPKE0, 1)
 
-	// Common log fields. peerCert may be nil during intermediate
-	// multi-message flows (handshake hasn't completed yet); skip the cert
-	// block if so.
 	logFields := []any{
 		"vpnAddrs", hostinfo.vpnAddrs,
 		"handshake", m{"stage": uint64(2), "style": "hpke0"},

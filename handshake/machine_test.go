@@ -125,17 +125,19 @@ func TestMachineProcessPacketErrors(t *testing.T) {
 		resp, _, err := respM.ProcessPacket(nil, msg1)
 		require.NoError(t, err)
 
-		corrupted := make([]byte, len(resp))
-		copy(corrupted, resp)
-		for i := header.Len; i < len(corrupted); i++ {
+		// resp = [init_index(4)] + [enc] + [ct]. Strip prefix before feeding to initiator.
+		respBody := resp[4:]
+
+		corrupted := make([]byte, len(respBody))
+		copy(corrupted, respBody)
+		for i := 4; i < len(corrupted); i++ {
 			corrupted[i] ^= 0xff
 		}
 		_, _, err = initM.ProcessPacket(nil, corrupted)
 		require.Error(t, err)
-		assert.False(t, initM.Failed(), "noise failure should be recoverable")
+		assert.False(t, initM.Failed(), "hpke failure should be recoverable")
 
-		// And the machine should still complete a real handshake afterward.
-		_, result, err := initM.ProcessPacket(nil, resp)
+		_, result, err := initM.ProcessPacket(nil, respBody)
 		require.NoError(t, err)
 		require.NotNil(t, result, "initiator should complete on the legitimate response")
 	})
@@ -156,28 +158,13 @@ func TestMachineProcessPacketErrors(t *testing.T) {
 		assert.True(t, respM.Failed(), "cert validation failure should kill machine")
 	})
 
-	t.Run("subtype mismatch is recoverable", func(t *testing.T) {
-		initCS := newTestCertState(t, ca, caKey, "init", []netip.Prefix{netip.MustParsePrefix("10.0.0.1/24")})
-		initM := newTestMachine(t, initCS, v, true, 100)
-		msg1, err := initM.Initiate(nil, cs.hpkePub)
-		require.NoError(t, err)
-
-		// Mutate the subtype byte (offset 1 in the header) to a value the
-		// responder Machine wasn't built for.
-		bad := make([]byte, len(msg1))
-		copy(bad, msg1)
-		bad[1] = 0xff
-
+	t.Run("garbage packet does not fail machine", func(t *testing.T) {
 		respM := newTestMachine(t, cs, v, false, 200)
-		_, _, err = respM.ProcessPacket(nil, bad)
-		require.ErrorIs(t, err, ErrSubtypeMismatch)
-		assert.False(t, respM.Failed(), "subtype mismatch should not kill the machine")
-
-		// And the machine should still complete a real handshake afterward.
-		resp, result, err := respM.ProcessPacket(nil, msg1)
-		require.NoError(t, err)
-		require.NotNil(t, result, "responder should complete on the legitimate stage-1 packet")
-		assert.NotEmpty(t, resp, "responder should produce a stage-2 reply")
+		// Random data that happens to be >= encLen should not fail the machine.
+		rnd := make([]byte, 64)
+		_, _, err := respM.ProcessPacket(nil, rnd)
+		require.Error(t, err)
+		assert.False(t, respM.Failed(), "garbage should not kill the machine")
 	})
 }
 
@@ -401,10 +388,10 @@ func TestMachineBufferReuse(t *testing.T) {
 		resp, _, err := respM2.ProcessPacket(nil, msg1)
 		require.NoError(t, err)
 
-		out, result, err := initM2.ProcessPacket(nil, resp)
+		out, result, err := initM2.ProcessPacket(nil, resp[4:])
 		require.NoError(t, err)
 		assert.NotNil(t, result)
-		assert.Nil(t, out, "initiator should have no response for IX msg2")
+		assert.Nil(t, out, "initiator should have no response for HPKE msg2")
 	})
 }
 
@@ -427,7 +414,7 @@ func TestMachineMsgIndexTracking(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, result1)
 
-	_, result2, err := initM.ProcessPacket(nil, resp1)
+	_, result2, err := initM.ProcessPacket(nil, resp1[4:])
 	require.NoError(t, err)
 	assert.NotNil(t, result2)
 }

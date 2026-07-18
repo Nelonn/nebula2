@@ -86,7 +86,7 @@ func runTestHandshake(t *testing.T) (initR, respR *handshake.Result) {
 	require.NoError(t, err)
 	require.NotNil(t, respR)
 
-	_, initR, err = initM.ProcessPacket(nil, resp)
+	_, initR, err = initM.ProcessPacket(nil, resp[4:])
 	require.NoError(t, err)
 	require.NotNil(t, initR)
 

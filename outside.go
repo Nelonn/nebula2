@@ -23,37 +23,36 @@ const (
 var ErrOutOfWindow = errors.New("out of window packet")
 
 func (f *Interface) readOutsidePackets(via ViaSender, out []byte, packet []byte, h *header.H, fwPacket *firewall.Packet, lhf *LightHouseHandler, nb []byte, q int, localCache firewall.ConntrackCache) {
+	// Try headerless HPKE handshake paths first.
+	// msg2 continuation: [initiator_index(4)] + [enc] + [ciphertext]
+	if len(packet) > 4 {
+		idx := binary.BigEndian.Uint32(packet[:4])
+		if hh := f.handshakeManager.QueryIndex(idx); hh != nil {
+			f.handshakeManager.HandleIncoming(via, packet[4:], idx)
+			return
+		}
+	}
+	// msg1: [enc] + [ciphertext] — trial decap
+	if len(packet) > 16 {
+		if f.handshakeManager.TrialDecap(via, packet) {
+			return
+		}
+	}
+
+	// Fall through to header-based dispatch for non-handshake packets.
 	err := h.Parse(packet)
 	if err != nil {
-		// Hole punch packets are 0 or 1 byte big, so lets ignore printing those errors
-		// TODO: record metrics for rx holepunch/punchy packets?
 		if len(packet) > 1 {
 			f.messageMetrics.RxInvalid(1)
 			if f.l.Enabled(context.Background(), slog.LevelDebug) {
-				f.l.Debug("Error while parsing inbound packet",
-					"from", via,
-					"error", err,
-					"packet", packet,
-				)
+				f.l.Debug("Error while parsing inbound packet", "from", via, "error", err)
 			}
 		}
 		return
 	}
 
-	if h.Version != header.Version {
+	if h.Version != header.Version || !h.IsValidSubType() {
 		f.messageMetrics.RxInvalid(1)
-		if f.l.Enabled(context.Background(), slog.LevelDebug) {
-			f.l.Debug("Unexpected header version received", "from", via)
-		}
-		return
-	}
-
-	// Check before processing to see if this is a expected type/subtype
-	if !h.IsValidSubType() {
-		f.messageMetrics.RxInvalid(1)
-		if f.l.Enabled(context.Background(), slog.LevelDebug) {
-			f.l.Debug("Unexpected packet received", "from", via)
-		}
 		return
 	}
 
@@ -67,17 +66,14 @@ func (f *Interface) readOutsidePackets(via ViaSender, out []byte, packet []byte,
 		}
 	}
 
-	// don't keep Rx metrics for message type, since you can see those in the tun metrics
 	if h.Type != header.Message {
 		f.messageMetrics.Rx(h.Type, h.Subtype, 1)
 	}
 
-	// Unencrypted packets
 	switch h.Type {
 	case header.Handshake:
-		f.handshakeManager.HandleIncoming(via, packet, h)
+		// Old-format handshake (IXPSK0) — no longer supported
 		return
-
 	case header.RecvError:
 		f.handleRecvError(via.UdpAddr, h)
 		return

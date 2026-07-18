@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"hash"
-	"slices"
 	"time"
 
 	"github.com/flynn/noise"
@@ -83,6 +82,12 @@ func NewMachine(
 func (m *Machine) Failed() bool                  { return m.failed }
 func (m *Machine) Subtype() header.MessageSubType { return m.subtype }
 func (m *Machine) MessageIndex() int              { return m.step }
+func (m *Machine) LocalIndex() uint32 {
+	if m.result != nil {
+		return m.result.LocalIndex
+	}
+	return 0
+}
 
 func (m *Machine) requireComplete() error {
 	if !m.payloadSet || !m.remoteCertSet {
@@ -107,6 +112,7 @@ func (m *Machine) peerMsgFlags() msgFlags {
 	return msgFlags{}
 }
 
+// Initiate builds msg1: [enc] + [ciphertext] — no plaintext header.
 func (m *Machine) Initiate(out []byte, remoteHPKEPub []byte) ([]byte, error) {
 	if m.failed {
 		return nil, ErrMachineFailed
@@ -130,16 +136,15 @@ func (m *Machine) Initiate(out []byte, remoteHPKEPub []byte) ([]byte, error) {
 	return m.initiateEncrypt(out, remoteHPKEPub, cred)
 }
 
+// ProcessPacket handles an incoming handshake message.
+// For responder: packet = [enc] + [ct]  (msg1 from initiator)
+// For initiator: packet = [enc] + [ct]  (msg2 from responder, already stripped of index prefix)
 func (m *Machine) ProcessPacket(out, packet []byte) ([]byte, *Result, error) {
 	if m.failed {
 		return nil, nil, ErrMachineFailed
 	}
-	if len(packet) < header.Len {
-		return nil, nil, ErrPacketTooShort
-	}
-	if header.MessageSubType(packet[1]) != m.subtype {
-		return nil, nil, ErrSubtypeMismatch
-	}
+
+	// Initiate must be called first for initiators.
 	if m.initiator && m.step == 0 {
 		m.failed = true
 		return nil, nil, ErrInitiateNotCalled
@@ -151,21 +156,20 @@ func (m *Machine) ProcessPacket(out, packet []byte) ([]byte, *Result, error) {
 		return nil, nil, fmt.Errorf("%w: %v", ErrNoCredential, m.myVersion)
 	}
 
-	body := packet[header.Len:]
 	suite := cred.HPKESuite
 	if suite == nil {
 		m.failed = true
 		return nil, nil, fmt.Errorf("hpke suite not configured")
 	}
+
 	kem := suite.KEM
 	encLen := kem.EncLen()
 
-	if len(body) < encLen {
-		m.failed = true
-		return nil, nil, fmt.Errorf("packet too short for enc, need %d got %d", encLen, len(body))
+	if len(packet) < encLen+1 {
+		return nil, nil, ErrPacketTooShort
 	}
-	enc := body[:encLen]
-	ct := body[encLen:]
+	enc := packet[:encLen]
+	ct := packet[encLen:]
 
 	var ctx *hpke.Context
 	var err error
@@ -189,6 +193,8 @@ func (m *Machine) ProcessPacket(out, packet []byte) ([]byte, *Result, error) {
 
 	msg, err := ctx.Open(nil, ct)
 	if err != nil {
+		// Decryption failure is recoverable — the caller can retry with a
+		// legitimate packet. Don't mark the machine as failed.
 		return nil, nil, fmt.Errorf("hpke open: %w", err)
 	}
 
@@ -224,6 +230,7 @@ func hpkePubKey(c cert.Certificate) []byte {
 	return nil
 }
 
+// respond builds msg2: [initiator_index(4)] + [enc] + [ciphertext]
 func (m *Machine) respond(out []byte) ([]byte, error) {
 	cred := m.getCred(m.myVersion)
 	if cred == nil {
@@ -259,13 +266,10 @@ func (m *Machine) respond(out []byte) ([]byte, error) {
 		return nil, fmt.Errorf("hpke seal: %w", err)
 	}
 
-	start := len(out)
-	out = slices.Grow(out, header.Len)[:start+header.Len]
-	header.Encode(
-		out[start:],
-		header.Version, header.Handshake, m.subtype,
-		m.result.RemoteIndex,
-		uint64(m.step+1),
+	// msg2: [initiator_index(4)] + [enc] + [ciphertext]
+	idx := m.result.RemoteIndex // initiator's index
+	out = append(out,
+		byte(idx>>24), byte(idx>>16), byte(idx>>8), byte(idx),
 	)
 	out = append(out, enc...)
 	out = append(out, ct...)
@@ -370,7 +374,6 @@ func (m *Machine) processPayload(msg []byte, flags msgFlags) error {
 			return err
 		}
 	}
-
 	return nil
 }
 
@@ -381,11 +384,10 @@ func (m *Machine) validateCert(payload Payload) error {
 		return fmt.Errorf("%w: %v", ErrNoCredential, m.myVersion)
 	}
 
-	var rc cert.Certificate
-	var err error
-
-	v := cert.Version(payload.CertVersion)
-	rc, err = cert.Recombine(v, payload.Cert, nil, cred.Cert.Curve())
+	rc, err := cert.Recombine(
+		cert.Version(payload.CertVersion),
+		payload.Cert, nil, cred.Cert.Curve(),
+	)
 	if err != nil {
 		m.failed = true
 		return fmt.Errorf("recombine cert: %w", err)
@@ -469,22 +471,10 @@ func (m *Machine) initiateEncrypt(out []byte, remoteHPKEPub []byte, cred *Creden
 		return nil, fmt.Errorf("hpke seal: %w", err)
 	}
 
-	start := len(out)
-	out = slices.Grow(out, header.Len)[:start+header.Len]
-	header.Encode(
-		out[start:],
-		header.Version, header.Handshake, m.subtype,
-		m.result.RemoteIndex,
-		uint64(m.step+1),
-	)
-
+	// msg1: [enc] + [ciphertext] — no plaintext header
 	out = append(out, enc...)
 	out = append(out, ct...)
 
 	m.step++
 	return out, nil
-}
-
-func (m *Machine) buildResponse(out []byte) ([]byte, *noise.CipherState, *noise.CipherState, error) {
-	return nil, nil, nil, fmt.Errorf("buildResponse not used in HPKE machine")
 }
