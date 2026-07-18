@@ -14,6 +14,7 @@ const (
 	VersionPre1 Version = 0
 	Version1    Version = 1
 	Version2    Version = 2
+	Version3    Version = 3 // HPKE-based handshake with optional ML-KEM hybrid keys
 )
 
 type Certificate interface {
@@ -126,10 +127,6 @@ func (cc *CachedCertificate) String() string {
 // reassemble the actual certificate structure with that in mind.
 // Implementations MUST assert the public key is not in the raw certificate bytes if the passed in public key is not empty.
 func Recombine(v Version, rawCertBytes, publicKey []byte, curve Curve) (Certificate, error) {
-	if publicKey == nil {
-		return nil, ErrNoPeerStaticKey
-	}
-
 	if rawCertBytes == nil {
 		return nil, ErrNoPayload
 	}
@@ -140,9 +137,14 @@ func Recombine(v Version, rawCertBytes, publicKey []byte, curve Curve) (Certific
 	switch v {
 	// Implementations must ensure the result is a valid cert!
 	case VersionPre1, Version1:
+		if publicKey == nil {
+			return nil, ErrNoPeerStaticKey
+		}
 		c, err = unmarshalCertificateV1(rawCertBytes, publicKey)
 	case Version2:
 		c, err = unmarshalCertificateV2(rawCertBytes, publicKey, curve)
+	case Version3:
+		c, err = unmarshalCertificateV3(rawCertBytes, publicKey, curve)
 	default:
 		return nil, ErrUnknownVersion
 	}
@@ -175,6 +177,8 @@ func CalculateAlternateFingerprint(c Certificate) (string, error) {
 	case *certificateV1:
 		err = v.setSignature(b)
 	case *certificateV2:
+		err = v.setSignature(b)
+	case *certificateV3:
 		err = v.setSignature(b)
 	default:
 		return "", ErrUnknownVersion

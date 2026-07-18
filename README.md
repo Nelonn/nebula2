@@ -1,3 +1,8 @@
+## Nebula 2
+
+A fork of Nebula that provides full-packet encryption for the entire protocol, including the handshake (via HPKE).
+It also introduces post-quantum cryptography.
+
 ## What is Nebula?
 Nebula is a scalable overlay networking tool with a focus on performance, simplicity and security.
 It lets you seamlessly connect computers anywhere in the world. Nebula is portable, and runs on Linux, OSX, Windows, iOS, and Android.
@@ -161,4 +166,3 @@ This is not the recommended default deployment, but may be useful based on your 
 ## Credits
 
 Nebula was created at Slack Technologies, Inc by Nate Brown and Ryan Huber, with contributions from Oliver Fross, Alan Lam, Wade Simmons, and Lining Wang.
-

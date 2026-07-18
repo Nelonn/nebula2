@@ -10,6 +10,7 @@ import (
 	ct "github.com/slackhq/nebula/cert_test"
 	"github.com/slackhq/nebula/handshake"
 	"github.com/slackhq/nebula/header"
+	"github.com/slackhq/nebula/hpke"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -25,22 +26,35 @@ func runTestHandshake(t *testing.T) (initR, respR *handshake.Result) {
 	)
 	caPool := ct.NewTestCAPool(ca)
 
-	makeCreds := func(name string, networks []netip.Prefix) handshake.GetCredentialFunc {
+	type testPeer struct {
+		creds   handshake.GetCredentialFunc
+		hpkePub []byte
+		hpkePriv []byte
+	}
+
+	makePeer := func(name string, networks []netip.Prefix) *testPeer {
 		c, _, rawKey, _ := ct.NewTestCert(
 			cert.Version2, cert.Curve_CURVE25519, ca, caKey,
 			name, ca.NotBefore(), ca.NotAfter(), networks, nil, nil,
 		)
-		priv, _, _, err := cert.UnmarshalPrivateKeyFromPEM(rawKey)
+		_, _, _, err := cert.UnmarshalPrivateKeyFromPEM(rawKey)
 		require.NoError(t, err)
 		hsBytes, err := c.MarshalForHandshakes()
 		require.NoError(t, err)
 		ncs := noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashSHA256)
-		cred := handshake.NewCredential(c, hsBytes, priv, ncs)
-		return func(v cert.Version) *handshake.Credential {
-			if v == cert.Version2 {
-				return cred
-			}
-			return nil
+		hSuite := hpke.DefaultHPKE
+		hpkePub, hpkePriv, err := hSuite.KEM.GenerateKeyPair()
+		require.NoError(t, err)
+		cred := handshake.NewCredential(c, hsBytes, hpkePriv, hpkePub, ncs, hSuite)
+		return &testPeer{
+			creds: func(v cert.Version) *handshake.Credential {
+				if v == cert.Version2 {
+					return cred
+				}
+				return nil
+			},
+			hpkePub:  hpkePub,
+			hpkePriv: hpkePriv,
 		}
 	}
 
@@ -48,24 +62,24 @@ func runTestHandshake(t *testing.T) (initR, respR *handshake.Result) {
 		return caPool.VerifyCertificate(time.Now(), c)
 	}
 
-	initCreds := makeCreds("initiator", []netip.Prefix{netip.MustParsePrefix("10.0.0.1/24")})
-	respCreds := makeCreds("responder", []netip.Prefix{netip.MustParsePrefix("10.0.0.2/24")})
+	initPeer := makePeer("initiator", []netip.Prefix{netip.MustParsePrefix("10.0.0.1/24")})
+	respPeer := makePeer("responder", []netip.Prefix{netip.MustParsePrefix("10.0.0.2/24")})
 
 	initM, err := handshake.NewMachine(
-		cert.Version2, initCreds, verifier,
+		cert.Version2, initPeer.creds, verifier,
 		func() (uint32, error) { return 1000, nil },
-		true, header.HandshakeIXPSK0,
+		true, header.HandshakeHPKE0,
 	)
 	require.NoError(t, err)
 
 	respM, err := handshake.NewMachine(
-		cert.Version2, respCreds, verifier,
+		cert.Version2, respPeer.creds, verifier,
 		func() (uint32, error) { return 2000, nil },
-		false, header.HandshakeIXPSK0,
+		false, header.HandshakeHPKE0,
 	)
 	require.NoError(t, err)
 
-	msg1, err := initM.Initiate(nil)
+	msg1, err := initM.Initiate(nil, respPeer.hpkePub)
 	require.NoError(t, err)
 
 	resp, respR, err := respM.ProcessPacket(nil, msg1)

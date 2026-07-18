@@ -9,10 +9,19 @@ import (
 	"github.com/slackhq/nebula/cert"
 	ct "github.com/slackhq/nebula/cert_test"
 	"github.com/slackhq/nebula/header"
+	"github.com/slackhq/nebula/hpke"
 	"github.com/slackhq/nebula/noiseutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// testHPKEPub returns a valid X25519 public key for HPKE error tests.
+func testHPKEPub(t *testing.T) []byte {
+	t.Helper()
+	pub, _, err := hpke.DHKEM_X25519.GenerateKeyPair()
+	require.NoError(t, err)
+	return pub
+}
 
 func TestMachineIXHappyPath(t *testing.T) {
 	ca, _, caKey, _ := ct.NewTestCaCert(
@@ -59,32 +68,34 @@ func TestMachineInitiateErrors(t *testing.T) {
 
 	t.Run("initiate on responder", func(t *testing.T) {
 		m := newTestMachine(t, cs, v, false, 100)
-		_, err := m.Initiate(nil)
+		_, err := m.Initiate(nil, testHPKEPub(t))
 		require.ErrorIs(t, err, ErrInitiateOnResponder)
 		assert.True(t, m.Failed())
 	})
 
 	t.Run("initiate called twice", func(t *testing.T) {
 		m := newTestMachine(t, cs, v, true, 100)
-		_, err := m.Initiate(nil)
+		_, err := m.Initiate(nil, testHPKEPub(t))
 		require.NoError(t, err)
-		_, err = m.Initiate(nil)
+		_, err = m.Initiate(nil, testHPKEPub(t))
 		require.ErrorIs(t, err, ErrInitiateAlreadyCalled)
 		assert.True(t, m.Failed())
 	})
 
 	t.Run("process packet before initiate on initiator", func(t *testing.T) {
 		m := newTestMachine(t, cs, v, true, 100)
-		_, _, err := m.ProcessPacket(nil, make([]byte, 100))
+		pkt := make([]byte, 100)
+		pkt[1] = byte(header.HandshakeHPKE0)
+		_, _, err := m.ProcessPacket(nil, pkt)
 		require.ErrorIs(t, err, ErrInitiateNotCalled)
 		assert.True(t, m.Failed())
 	})
 
 	t.Run("calling failed machine", func(t *testing.T) {
 		m := newTestMachine(t, cs, v, false, 100)
-		_, err := m.Initiate(nil) // fails: responder
+		_, err := m.Initiate(nil, testHPKEPub(t)) // fails: responder
 		require.Error(t, err)
-		_, err = m.Initiate(nil) // fails: already failed
+		_, err = m.Initiate(nil, testHPKEPub(t)) // fails: already failed
 		require.ErrorIs(t, err, ErrMachineFailed)
 	})
 }
@@ -104,10 +115,10 @@ func TestMachineProcessPacketErrors(t *testing.T) {
 		assert.False(t, m.Failed(), "short packet should not kill machine")
 	})
 
-	t.Run("noise decryption failure is recoverable", func(t *testing.T) {
+	t.Run("hpke decryption failure is recoverable", func(t *testing.T) {
 		initCS := newTestCertState(t, ca, caKey, "init", []netip.Prefix{netip.MustParsePrefix("10.0.0.1/24")})
 		initM := newTestMachine(t, initCS, v, true, 100)
-		msg1, err := initM.Initiate(nil)
+		msg1, err := initM.Initiate(nil, cs.hpkePub)
 		require.NoError(t, err)
 
 		respM := newTestMachine(t, cs, v, false, 200)
@@ -136,7 +147,7 @@ func TestMachineProcessPacketErrors(t *testing.T) {
 		otherCS := newTestCertState(t, otherCA, otherCAKey, "other", []netip.Prefix{netip.MustParsePrefix("10.0.0.2/24")})
 
 		initM := newTestMachine(t, otherCS, testVerifier(ct.NewTestCAPool(otherCA)), true, 100)
-		msg1, err := initM.Initiate(nil)
+		msg1, err := initM.Initiate(nil, cs.hpkePub)
 		require.NoError(t, err)
 
 		respM := newTestMachine(t, cs, v, false, 200)
@@ -148,7 +159,7 @@ func TestMachineProcessPacketErrors(t *testing.T) {
 	t.Run("subtype mismatch is recoverable", func(t *testing.T) {
 		initCS := newTestCertState(t, ca, caKey, "init", []netip.Prefix{netip.MustParsePrefix("10.0.0.1/24")})
 		initM := newTestMachine(t, initCS, v, true, 100)
-		msg1, err := initM.Initiate(nil)
+		msg1, err := initM.Initiate(nil, cs.hpkePub)
 		require.NoError(t, err)
 
 		// Mutate the subtype byte (offset 1 in the header) to a value the
@@ -355,7 +366,7 @@ func TestMachineBufferReuse(t *testing.T) {
 	initM := newTestMachine(t, initCS, v, true, 1000)
 	respM := newTestMachine(t, respCS, v, false, 2000)
 
-	msg1, err := initM.Initiate(nil)
+	msg1, err := initM.Initiate(nil, respCS.hpkePub)
 	require.NoError(t, err)
 
 	t.Run("response writes into provided buffer", func(t *testing.T) {
@@ -372,7 +383,7 @@ func TestMachineBufferReuse(t *testing.T) {
 	t.Run("initiate writes into provided buffer", func(t *testing.T) {
 		initM2 := newTestMachine(t, initCS, v, true, 3000)
 		buf := make([]byte, 0, 4096)
-		msg, err := initM2.Initiate(buf)
+		msg, err := initM2.Initiate(buf, respCS.hpkePub)
 		require.NoError(t, err)
 
 		assert.NotEmpty(t, msg, "initiate should have content")
@@ -384,7 +395,7 @@ func TestMachineBufferReuse(t *testing.T) {
 		initM2 := newTestMachine(t, initCS, v, true, 4000)
 		respM2 := newTestMachine(t, respCS, v, false, 5000)
 
-		msg1, err := initM2.Initiate(nil)
+		msg1, err := initM2.Initiate(nil, respCS.hpkePub)
 		require.NoError(t, err)
 
 		resp, _, err := respM2.ProcessPacket(nil, msg1)
@@ -409,7 +420,7 @@ func TestMachineMsgIndexTracking(t *testing.T) {
 	initM := newTestMachine(t, initCS, v, true, 100)
 	respM := newTestMachine(t, respCS, v, false, 200)
 
-	msg1, err := initM.Initiate(nil)
+	msg1, err := initM.Initiate(nil, respCS.hpkePub)
 	require.NoError(t, err)
 
 	resp1, result1, err := respM.ProcessPacket(nil, msg1)
@@ -421,80 +432,35 @@ func TestMachineMsgIndexTracking(t *testing.T) {
 	assert.NotNil(t, result2)
 }
 
-func TestMachineThreeMessagePattern(t *testing.T) {
-	registerTestXXInfo(t)
-
-	// Use HandshakeXX (3 messages) to verify the Machine handles multi-message
-	// patterns correctly. XX flow:
-	//   msg1 (I->R): [E]           - payload only, no cert
-	//   msg2 (R->I): [E, ee, S, es] - payload + cert
-	//   msg3 (I->R): [S, se]       - cert only (no payload, not first two)
-
+func TestMachineHPKEHappyPath(t *testing.T) {
 	ca, _, caKey, _ := ct.NewTestCaCert(
 		cert.Version2, cert.Curve_CURVE25519, time.Time{}, time.Time{}, nil, nil, nil,
 	)
 	caPool := ct.NewTestCAPool(ca)
-	v := testVerifier(caPool)
 
 	initCS := newTestCertState(t, ca, caKey, "init", []netip.Prefix{netip.MustParsePrefix("10.0.0.1/24")})
 	respCS := newTestCertState(t, ca, caKey, "resp", []netip.Prefix{netip.MustParsePrefix("10.0.0.2/24")})
 
-	initM, err := NewMachine(
-		cert.Version2,
-		initCS.getCredential, v,
-		func() (uint32, error) { return 1000, nil },
-		true, header.HandshakeXXPSK0,
-	)
-	require.NoError(t, err)
+	initR, respR := doFullHandshake(t, initCS, respCS, caPool)
 
-	respM, err := NewMachine(
-		cert.Version2,
-		respCS.getCredential, v,
-		func() (uint32, error) { return 2000, nil },
-		false, header.HandshakeXXPSK0,
-	)
-	require.NoError(t, err)
+	assert.Equal(t, "resp", initR.RemoteCert.Certificate.Name())
+	assert.Equal(t, "init", respR.RemoteCert.Certificate.Name())
 
-	// msg1: initiator -> responder (E only, no cert)
-	msg1, err := initM.Initiate(nil)
-	require.NoError(t, err)
-	assert.NotEmpty(t, msg1)
+	assert.Equal(t, uint64(2), initR.MessageIndex, "HPKE has 2 messages")
+	assert.Equal(t, uint64(2), respR.MessageIndex, "HPKE has 2 messages")
 
-	// Responder processes msg1, should not complete yet, should produce msg2
-	msg2, result, err := respM.ProcessPacket(nil, msg1)
+	ct1, err := initR.EKey.Encrypt(nil, nil, []byte("hello"))
 	require.NoError(t, err)
-	assert.Nil(t, result, "XX should not complete on msg1")
-	assert.NotEmpty(t, msg2, "responder should produce msg2")
+	pt, err := respR.DKey.Decrypt(nil, nil, ct1)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("hello"), pt)
 
-	// Initiator processes msg2: gets responder's cert, produces msg3, and
-	// completes (WriteMessage for msg3 derives keys)
-	msg3, initResult, err := initM.ProcessPacket(nil, msg2)
+	ct2, err := respR.EKey.Encrypt(nil, nil, []byte("world"))
 	require.NoError(t, err)
-	require.NotNil(t, initResult, "XX initiator should complete after reading msg2 and writing msg3")
-	assert.NotEmpty(t, msg3, "initiator should produce msg3")
-	assert.Equal(t, "resp", initResult.RemoteCert.Certificate.Name())
-
-	// Responder processes msg3: gets initiator's cert and completes
-	_, respResult, err := respM.ProcessPacket(nil, msg3)
+	pt2, err := initR.DKey.Decrypt(nil, nil, ct2)
 	require.NoError(t, err)
-	require.NotNil(t, respResult, "XX responder should complete on msg3")
-	assert.Equal(t, "init", respResult.RemoteCert.Certificate.Name())
-
-	assert.Equal(t, uint64(3), initResult.MessageIndex, "XX has 3 messages")
-	assert.Equal(t, uint64(3), respResult.MessageIndex, "XX has 3 messages")
-
-	// Verify keys work
-	ct1, err := initResult.EKey.Encrypt(nil, nil, []byte("three messages"))
-	require.NoError(t, err)
-	pt1, err := respResult.DKey.Decrypt(nil, nil, ct1)
-	require.NoError(t, err)
-	assert.Equal(t, []byte("three messages"), pt1)
+	assert.Equal(t, []byte("world"), pt2)
 }
-
-// NOTE: ErrIncompleteHandshake is tested implicitly. It can't be triggered with
-// IX since the cert is always in the payload. A 3-message pattern test (HybridIX)
-// should exercise the case where cert arrives in msg3 and verify that completing
-// without it fails.
 
 func TestMachineExpiredCert(t *testing.T) {
 	ca, _, caKey, _ := ct.NewTestCaCert(
@@ -509,16 +475,21 @@ func TestMachineExpiredCert(t *testing.T) {
 		"expired", time.Now().Add(-2*time.Hour), time.Now().Add(-1*time.Hour),
 		[]netip.Prefix{netip.MustParsePrefix("10.0.0.1/24")}, nil, nil,
 	)
-	expKey, _, _, err := cert.UnmarshalPrivateKeyFromPEM(expKeyPEM)
+	_, _, _, err := cert.UnmarshalPrivateKeyFromPEM(expKeyPEM)
 	require.NoError(t, err)
 	expHsBytes, err := expCert.MarshalForHandshakes()
 	require.NoError(t, err)
 	ncs := noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashSHA256)
+	hSuite := hpke.DefaultHPKE
+	expHPKEPub, expHPKEPriv, err := hpke.DHKEM_X25519.GenerateKeyPair()
+	require.NoError(t, err)
 
 	expiredCS := &testCertState{
-		version: cert.Version2,
+		version:  cert.Version2,
+		hpkePub:  expHPKEPub,
+		hpkePriv: expHPKEPriv,
 		creds: map[cert.Version]*Credential{
-			cert.Version2: NewCredential(expCert, expHsBytes, expKey, ncs),
+			cert.Version2: NewCredential(expCert, expHsBytes, expHPKEPriv, expHPKEPub, ncs, hSuite),
 		},
 	}
 
@@ -544,11 +515,16 @@ func TestMachineNoCertNetworks(t *testing.T) {
 	caHsBytes, err := ca.MarshalForHandshakes()
 	require.NoError(t, err)
 	ncs := noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashSHA256)
+	hSuite := hpke.DefaultHPKE
+	caHPKEPub, caHPKEPriv, err := hpke.DHKEM_X25519.GenerateKeyPair()
+	require.NoError(t, err)
 
 	noNetCS := &testCertState{
-		version: cert.Version2,
+		version:  cert.Version2,
+		hpkePub:  caHPKEPub,
+		hpkePriv: caHPKEPriv,
 		creds: map[cert.Version]*Credential{
-			cert.Version2: NewCredential(ca, caHsBytes, caKey, ncs),
+			cert.Version2: NewCredential(ca, caHsBytes, caHPKEPriv, caHPKEPub, ncs, hSuite),
 		},
 	}
 
@@ -606,16 +582,21 @@ func TestMachineVersionNegotiation(t *testing.T) {
 			ca1.NotBefore(), ca1.NotAfter(),
 			[]netip.Prefix{netip.MustParsePrefix("10.0.0.2/24")}, nil, nil,
 		)
-		respKey, _, _, _ := cert.UnmarshalPrivateKeyFromPEM(respKeyPEM)
+		_, _, _, _ = cert.UnmarshalPrivateKeyFromPEM(respKeyPEM)
 		respCertV2, _ := ct.NewTestCertDifferentVersion(respCertV1, cert.Version2, ca2, caKey2)
 		respHsV1, _ := respCertV1.MarshalForHandshakes()
 		respHsV2, _ := respCertV2.MarshalForHandshakes()
 		ncs := noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashSHA256)
+		hSuite := hpke.DefaultHPKE
+		hpkePub, hpkePriv, err := hpke.DHKEM_X25519.GenerateKeyPair()
+		require.NoError(t, err)
 		return &testCertState{
-			version: cert.Version1,
+			version:  cert.Version1,
+			hpkePub:  hpkePub,
+			hpkePriv: hpkePriv,
 			creds: map[cert.Version]*Credential{
-				cert.Version1: NewCredential(respCertV1, respHsV1, respKey, ncs),
-				cert.Version2: NewCredential(respCertV2, respHsV2, respKey, ncs),
+				cert.Version1: NewCredential(respCertV1, respHsV1, hpkePriv, hpkePub, ncs, hSuite),
+				cert.Version2: NewCredential(respCertV2, respHsV2, hpkePriv, hpkePub, ncs, hSuite),
 			},
 		}
 	}
@@ -656,13 +637,18 @@ func TestMachineVersionNegotiation(t *testing.T) {
 			ca1.NotBefore(), ca1.NotAfter(),
 			[]netip.Prefix{netip.MustParsePrefix("10.0.0.2/24")}, nil, nil,
 		)
-		respKey, _, _, _ := cert.UnmarshalPrivateKeyFromPEM(respKeyPEM)
+		_, _, _, _ = cert.UnmarshalPrivateKeyFromPEM(respKeyPEM)
 		respHs, _ := respCert.MarshalForHandshakes()
 		ncs := noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashSHA256)
+		hSuite := hpke.DefaultHPKE
+		hpkePub2, hpkePriv2, genErr := hpke.DHKEM_X25519.GenerateKeyPair()
+		require.NoError(t, genErr)
 		respCS := &testCertState{
-			version: cert.Version1,
+			version:  cert.Version1,
+			hpkePub:  hpkePub2,
+			hpkePriv: hpkePriv2,
 			creds: map[cert.Version]*Credential{
-				cert.Version1: NewCredential(respCert, respHs, respKey, ncs),
+				cert.Version1: NewCredential(respCert, respHs, hpkePriv2, hpkePub2, ncs, hSuite),
 			},
 		}
 

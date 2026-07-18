@@ -1,61 +1,37 @@
 package handshake
 
 import (
-	"bytes"
+	"crypto/hkdf"
+	"crypto/sha256"
 	"fmt"
+	"hash"
 	"slices"
 	"time"
 
 	"github.com/flynn/noise"
 	"github.com/slackhq/nebula/cert"
 	"github.com/slackhq/nebula/header"
+	"github.com/slackhq/nebula/hpke"
 )
 
-// IndexAllocator is called by the Machine to allocate a local index for the
-// handshake. It is called at most once, when the first outgoing message that
-// carries a payload is built.
-//
-// Implementations MUST NOT return 0. Zero is reserved as a sentinel meaning
-// "no index assigned" on the wire and in the payload-presence checks. If an
-// allocator ever returned 0, a legitimate handshake's payload could be
-// indistinguishable from an empty one and would be rejected.
 type IndexAllocator func() (uint32, error)
 
-// CertVerifier is called by the Machine after reconstructing the peer's
-// certificate from the handshake. The verifier performs all validation
-// (CA trust, expiry, policy checks, allow lists).
 type CertVerifier func(cert.Certificate) (*cert.CachedCertificate, error)
 
-// Result contains the results of a successful handshake.
-// Returned by ProcessPacket when the handshake is complete.
 type Result struct {
 	EKey          *noise.CipherState
 	DKey          *noise.CipherState
-	Cipher        noise.CipherFunc // identifies which post-handshake CipherState the data plane should wrap EKey/DKey in
+	Cipher        noise.CipherFunc
 	MyCert        cert.Certificate
 	RemoteCert    *cert.CachedCertificate
 	RemoteIndex   uint32
 	LocalIndex    uint32
 	HandshakeTime uint64
-	MessageIndex  uint64 // number of messages exchanged during the handshake
+	MessageIndex  uint64
 	Initiator     bool
 }
 
-// Machine drives a Noise handshake through N messages. It handles Noise
-// protocol operations, certificate reconstruction, and payload encoding.
-// Certificate validation is delegated to the caller via CertVerifier.
-//
-// A Machine is not safe for concurrent use. The caller must ensure that
-// Initiate and ProcessPacket are not called concurrently.
-//
-// Error contract: when ProcessPacket or Initiate returns an error, callers
-// must check Failed() to decide what to do next. If Failed() is false the
-// underlying noise state was not advanced (the packet was rejected before
-// ReadMessage took effect, or the rejection is non-fatal like a stale
-// retransmit) and the Machine can accept another packet. If Failed() is
-// true the Machine is unrecoverable and the caller must abandon it.
 type Machine struct {
-	hs             *noise.HandshakeState
 	getCred        GetCredentialFunc
 	allocIndex     IndexAllocator
 	verifier       CertVerifier
@@ -67,12 +43,12 @@ type Machine struct {
 	remoteCertSet  bool
 	payloadSet     bool
 	failed         bool
+	initiator      bool
+	step           int
+	remoteHPKEPub  []byte
+	peerHPKEPub    []byte
 }
 
-// NewMachine creates a handshake state machine. The subtype determines both
-// the noise pattern and the per-message content layout. The credential for
-// `version` is fetched via getCred and used to seed the noise.HandshakeState.
-// IndexAllocator is called lazily when the first outgoing payload is built.
 func NewMachine(
 	version cert.Version,
 	getCred GetCredentialFunc,
@@ -85,50 +61,29 @@ func NewMachine(
 	if err != nil {
 		return nil, err
 	}
-
 	cred := getCred(version)
 	if cred == nil {
 		return nil, fmt.Errorf("%w: %v", ErrNoCredential, version)
 	}
-
-	hs, err := cred.buildHandshakeState(initiator, info.pattern)
-	if err != nil {
-		return nil, fmt.Errorf("build noise state: %w", err)
-	}
-
 	return &Machine{
-		hs:         hs,
-		subtype:    subtype,
-		msgs:       info.msgs,
-		getCred:    getCred,
+		subtype:   subtype,
+		msgs:      info.msgs,
+		getCred:   getCred,
 		allocIndex: allocIndex,
-		verifier:   verifier,
-		myVersion:  version,
+		verifier:  verifier,
+		myVersion: version,
+		initiator: initiator,
 		result: &Result{
 			Initiator: initiator,
-			Cipher:    cred.cipherSuite,
+			Cipher:    cred.CipherSuite,
 		},
 	}, nil
 }
 
-// Failed returns true if the Machine is in an unrecoverable state.
-func (m *Machine) Failed() bool {
-	return m.failed
-}
+func (m *Machine) Failed() bool                  { return m.failed }
+func (m *Machine) Subtype() header.MessageSubType { return m.subtype }
+func (m *Machine) MessageIndex() int              { return m.step }
 
-// Subtype returns the handshake subtype this Machine was built for.
-func (m *Machine) Subtype() header.MessageSubType {
-	return m.subtype
-}
-
-// MessageIndex returns the noise handshake message index, which equals the
-// wire counter of the most recently sent or received message.
-func (m *Machine) MessageIndex() int {
-	return m.hs.MessageIndex()
-}
-
-// requireComplete checks that both a peer cert and payload have been received.
-// Marks the machine as failed if not.
 func (m *Machine) requireComplete() error {
 	if !m.payloadSet || !m.remoteCertSet {
 		m.failed = true
@@ -137,69 +92,44 @@ func (m *Machine) requireComplete() error {
 	return nil
 }
 
-// myMsgFlags returns the flags for the current outgoing message.
 func (m *Machine) myMsgFlags() msgFlags {
-	idx := m.hs.MessageIndex()
-	if idx < len(m.msgs) {
-		return m.msgs[idx]
+	if m.step < len(m.msgs) {
+		return m.msgs[m.step]
 	}
 	return msgFlags{}
 }
 
-// peerMsgFlags returns the flags for the message we just read.
 func (m *Machine) peerMsgFlags() msgFlags {
-	idx := m.hs.MessageIndex() - 1
+	idx := m.step - 1
 	if idx >= 0 && idx < len(m.msgs) {
 		return m.msgs[idx]
 	}
 	return msgFlags{}
 }
 
-// Initiate produces the first handshake message. Only valid for initiators,
-// and must be called exactly once before ProcessPacket.
-//
-// out is a destination buffer the message is appended to and returned. Pass
-// nil to allocate fresh, or pass a re-used buffer sliced to length 0 (e.g.
-// buf[:0]) with sufficient capacity to avoid allocation.
-//
-// An error return may not indicate a fatal condition, check Failed() to
-// determine if the Machine can still be used.
-func (m *Machine) Initiate(out []byte) ([]byte, error) {
+func (m *Machine) Initiate(out []byte, remoteHPKEPub []byte) ([]byte, error) {
 	if m.failed {
 		return nil, ErrMachineFailed
 	}
-	if !m.result.Initiator {
+	if !m.initiator {
 		m.failed = true
 		return nil, ErrInitiateOnResponder
 	}
-	if m.hs.MessageIndex() != 0 {
+	if m.step != 0 {
 		m.failed = true
 		return nil, ErrInitiateAlreadyCalled
 	}
 
-	// At MessageIndex=0 with RemoteIndex still zero, buildResponse produces
-	// header counter 1 and remote index 0, which is what the initial message needs.
-	out, _, _, err := m.buildResponse(out)
-	if err != nil {
+	cred := m.getCred(m.myVersion)
+	if cred == nil {
 		m.failed = true
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", ErrNoCredential, m.myVersion)
 	}
-	return out, nil
+
+	m.remoteHPKEPub = remoteHPKEPub
+	return m.initiateEncrypt(out, remoteHPKEPub, cred)
 }
 
-// ProcessPacket handles an incoming handshake message. It advances the Noise
-// state, validates the peer certificate via the verifier, and optionally
-// produces a response.
-//
-// out is a destination buffer the response is appended to and returned. Pass
-// nil to allocate fresh, or pass a re-used buffer sliced to length 0 (e.g.
-// buf[:0]) with sufficient capacity to avoid allocation. The returned slice
-// is nil when no outgoing message is produced (handshake complete on this
-// side, or final message of a multi-message pattern).
-//
-// Returns a non-nil Result when the handshake is complete.
-// An error return may not indicate a fatal condition, check Failed() to
-// determine if the Machine can still be used.
 func (m *Machine) ProcessPacket(out, packet []byte) ([]byte, *Result, error) {
 	if m.failed {
 		return nil, nil, ErrMachineFailed
@@ -207,79 +137,185 @@ func (m *Machine) ProcessPacket(out, packet []byte) ([]byte, *Result, error) {
 	if len(packet) < header.Len {
 		return nil, nil, ErrPacketTooShort
 	}
-	// Reject packets whose subtype doesn't match the one this Machine was
-	// built for. A pending handshake that suddenly receives a different
-	// subtype on its index is either a stray packet that matched by chance
-	// or a peer protocol violation; drop it without failing the Machine so
-	// the legitimate retransmit can still complete.
 	if header.MessageSubType(packet[1]) != m.subtype {
 		return nil, nil, ErrSubtypeMismatch
 	}
-	if m.result.Initiator && m.hs.MessageIndex() == 0 {
+	if m.initiator && m.step == 0 {
 		m.failed = true
 		return nil, nil, ErrInitiateNotCalled
 	}
 
-	// The (eKey, dKey) ordering here is correct for IX, where the initiator
-	// completes the handshake by reading the responder's stage-2 message.
-	// noise returns (cs1, cs2) where cs1 is the initiator->responder cipher.
-	// For 3-message patterns where a responder finishes by reading the final
-	// message, this ordering would be wrong; revisit when XX/pqIX lands.
-	msg, eKey, dKey, err := m.hs.ReadMessage(nil, packet[header.Len:])
-	if err != nil {
-		// Noise ReadMessage failed. The noise library checkpoints and rolls back
-		// on failure, so the Machine is still alive. The caller can retry with
-		// a different packet.
-		return nil, nil, fmt.Errorf("noise ReadMessage: %w", err)
+	cred := m.getCred(m.myVersion)
+	if cred == nil {
+		m.failed = true
+		return nil, nil, fmt.Errorf("%w: %v", ErrNoCredential, m.myVersion)
 	}
 
-	// From here on, noise state has advanced. Any error is fatal.
+	body := packet[header.Len:]
+	suite := cred.HPKESuite
+	if suite == nil {
+		m.failed = true
+		return nil, nil, fmt.Errorf("hpke suite not configured")
+	}
+	kem := suite.KEM
+	encLen := kem.EncLen()
+
+	if len(body) < encLen {
+		m.failed = true
+		return nil, nil, fmt.Errorf("packet too short for enc, need %d got %d", encLen, len(body))
+	}
+	enc := body[:encLen]
+	ct := body[encLen:]
+
+	var ctx *hpke.Context
+	var err error
+
+	if !m.initiator {
+		ctx, err = hpke.SetupBaseR(enc, cred.HPKEPriv, []byte("nebula-hpke-msg1"), suite)
+		if err != nil {
+			return nil, nil, fmt.Errorf("hpke base: %w", err)
+		}
+	} else {
+		pkS := m.remoteHPKEPub
+		if len(pkS) == 0 {
+			m.failed = true
+			return nil, nil, fmt.Errorf("no remote hpke key for auth decryption")
+		}
+		ctx, err = hpke.SetupAuthR(enc, cred.HPKEPriv, pkS, []byte("nebula-hpke-msg2"), suite)
+		if err != nil {
+			return nil, nil, fmt.Errorf("hpke auth: %w", err)
+		}
+	}
+
+	msg, err := ctx.Open(nil, ct)
+	if err != nil {
+		return nil, nil, fmt.Errorf("hpke open: %w", err)
+	}
+
+	m.step++
 	flags := m.peerMsgFlags()
 
 	if err := m.processPayload(msg, flags); err != nil {
 		return nil, nil, err
 	}
 
-	// If ReadMessage derived keys, the handshake is complete. Noise should
-	// always produce both keys together; asymmetry is a protocol invariant
-	// violation.
-	if eKey != nil || dKey != nil {
-		if eKey == nil || dKey == nil {
+	if !m.initiator {
+		rsp, err := m.respond(out)
+		if err != nil {
 			m.failed = true
-			return nil, nil, ErrAsymmetricCipherKeys
-		}
-		if err := m.requireComplete(); err != nil {
 			return nil, nil, err
 		}
-		return nil, m.completed(eKey, dKey), nil
+		if rsp != nil {
+			return rsp, m.completed(), nil
+		}
+		return nil, nil, nil
 	}
 
-	// ReadMessage didn't complete, produce the next outgoing message
-	out, dk, ek, err := m.buildResponse(out)
-	if err != nil {
-		m.failed = true
+	if err := m.requireComplete(); err != nil {
 		return nil, nil, err
 	}
-
-	if ek != nil || dk != nil {
-		if ek == nil || dk == nil {
-			m.failed = true
-			return nil, nil, ErrAsymmetricCipherKeys
-		}
-		if err := m.requireComplete(); err != nil {
-			return nil, nil, err
-		}
-		return out, m.completed(ek, dk), nil
-	}
-
-	return out, nil, nil
+	return nil, m.completed(), nil
 }
 
-func (m *Machine) completed(eKey, dKey *noise.CipherState) *Result {
-	m.result.EKey = eKey
-	m.result.DKey = dKey
-	m.result.MessageIndex = uint64(m.hs.MessageIndex())
+func hpkePubKey(c cert.Certificate) []byte {
+	if hk, ok := c.(cert.HPKEPublicKeyer); ok {
+		return hk.HPKEPublicKey()
+	}
+	return nil
+}
+
+func (m *Machine) respond(out []byte) ([]byte, error) {
+	cred := m.getCred(m.myVersion)
+	if cred == nil {
+		return nil, fmt.Errorf("%w: %v", ErrNoCredential, m.myVersion)
+	}
+	suite := cred.HPKESuite
+	if suite == nil {
+		return nil, fmt.Errorf("hpke suite not configured")
+	}
+
+	pkR := m.peerHPKEPub
+	if len(pkR) == 0 {
+		peerCert := m.result.RemoteCert.Certificate
+		pkR = hpkePubKey(peerCert)
+		if pkR == nil {
+			pkR = peerCert.PublicKey()
+		}
+	}
+
+	ctx, enc, err := hpke.SetupAuthS(pkR, cred.HPKEPriv, []byte("nebula-hpke-msg2"), suite)
+	if err != nil {
+		return nil, fmt.Errorf("hpke auth setup: %w", err)
+	}
+
+	flags := m.myMsgFlags()
+	hsBytes, err := m.marshalOutgoing(flags)
+	if err != nil {
+		return nil, err
+	}
+
+	ct, err := ctx.Seal(nil, hsBytes)
+	if err != nil {
+		return nil, fmt.Errorf("hpke seal: %w", err)
+	}
+
+	start := len(out)
+	out = slices.Grow(out, header.Len)[:start+header.Len]
+	header.Encode(
+		out[start:],
+		header.Version, header.Handshake, m.subtype,
+		m.result.RemoteIndex,
+		uint64(m.step+1),
+	)
+	out = append(out, enc...)
+	out = append(out, ct...)
+
+	m.step++
+	if err := m.requireComplete(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (m *Machine) completed() *Result {
+	cred := m.getCred(m.myVersion)
+	if cred == nil {
+		return m.result
+	}
+	suite := cred.HPKESuite
+	if suite == nil {
+		return m.result
+	}
+
+	ssLen := suite.KEM.SharedSecretLen()
+	ks := make([]byte, 2*ssLen)
+	masterKey := hkdfExpand(sha256.New, ks, "nebula-hpke-master", 32)
+	eKey := hkdfExpand(sha256.New, masterKey, "initiator-to-responder", 32)
+	dKey := hkdfExpand(sha256.New, masterKey, "responder-to-initiator", 32)
+
+	var ek [32]byte
+	var dk [32]byte
+	copy(ek[:], eKey)
+	copy(dk[:], dKey)
+
+	cs := cred.CipherSuite
+	m.result.EKey = noise.UnsafeNewCipherState(cs, ek, 0)
+	m.result.DKey = noise.UnsafeNewCipherState(cs, dk, 0)
+	m.result.MessageIndex = uint64(m.step)
+
+	if m.initiator {
+		m.result.EKey, m.result.DKey = m.result.DKey, m.result.EKey
+	}
+
 	return m.result
+}
+
+func hkdfExpand(h func() hash.Hash, secret []byte, label string, length int) []byte {
+	key, err := hkdf.Expand(h, secret, label, length)
+	if err != nil {
+		panic(err)
+	}
+	return key
 }
 
 func (m *Machine) processPayload(msg []byte, flags msgFlags) error {
@@ -297,7 +333,6 @@ func (m *Machine) processPayload(msg []byte, flags msgFlags) error {
 		return fmt.Errorf("unmarshal handshake: %w", err)
 	}
 
-	// Assert the payload contains exactly what we expect
 	hasPayloadData := payload.InitiatorIndex != 0 || payload.ResponderIndex != 0 || payload.Time != 0
 	if hasPayloadData != flags.expectsPayload {
 		m.failed = true
@@ -310,16 +345,13 @@ func (m *Machine) processPayload(msg []byte, flags msgFlags) error {
 		return ErrUnexpectedContent
 	}
 
-	// Process payload
 	if flags.expectsPayload {
 		var remoteIndex uint32
-		if m.result.Initiator {
+		if m.initiator {
 			remoteIndex = payload.ResponderIndex
 		} else {
 			remoteIndex = payload.InitiatorIndex
 		}
-		// The payload presence check above can be satisfied by Time alone, so a payload
-		// could still carry a zero index here. We need to reject it.
 		if remoteIndex == 0 {
 			m.failed = true
 			return ErrInvalidRemoteIndex
@@ -329,7 +361,10 @@ func (m *Machine) processPayload(msg []byte, flags msgFlags) error {
 		m.payloadSet = true
 	}
 
-	// Process certificate
+	if len(payload.HPKEPublicKey) > 0 {
+		m.peerHPKEPub = append([]byte(nil), payload.HPKEPublicKey...)
+	}
+
 	if flags.expectsCert {
 		if err := m.validateCert(payload); err != nil {
 			return err
@@ -345,23 +380,17 @@ func (m *Machine) validateCert(payload Payload) error {
 		m.failed = true
 		return fmt.Errorf("%w: %v", ErrNoCredential, m.myVersion)
 	}
-	rc, err := cert.Recombine(
-		cert.Version(payload.CertVersion),
-		payload.Cert,
-		m.hs.PeerStatic(),
-		cred.Cert.Curve(),
-	)
+
+	var rc cert.Certificate
+	var err error
+
+	v := cert.Version(payload.CertVersion)
+	rc, err = cert.Recombine(v, payload.Cert, nil, cred.Cert.Curve())
 	if err != nil {
 		m.failed = true
 		return fmt.Errorf("recombine cert: %w", err)
 	}
 
-	if !bytes.Equal(rc.PublicKey(), m.hs.PeerStatic()) {
-		m.failed = true
-		return ErrPublicKeyMismatch
-	}
-
-	// Version negotiation, if the peer sent a different version and we have it, switch
 	if rc.Version() != m.myVersion {
 		if m.getCred(rc.Version()) != nil {
 			m.myVersion = rc.Version()
@@ -395,7 +424,7 @@ func (m *Machine) marshalOutgoing(flags msgFlags) ([]byte, error) {
 			m.indexAllocated = true
 		}
 
-		if m.result.Initiator {
+		if m.initiator {
 			p.InitiatorIndex = m.result.LocalIndex
 		} else {
 			p.ResponderIndex = m.result.LocalIndex
@@ -403,6 +432,7 @@ func (m *Machine) marshalOutgoing(flags msgFlags) ([]byte, error) {
 		}
 		p.Time = uint64(time.Now().UnixNano())
 	}
+
 	if flags.expectsCert {
 		cred := m.getCred(m.myVersion)
 		if cred == nil {
@@ -410,45 +440,51 @@ func (m *Machine) marshalOutgoing(flags msgFlags) ([]byte, error) {
 		}
 		p.Cert = cred.Bytes
 		p.CertVersion = uint32(cred.Cert.Version())
+		p.HPKEPublicKey = cred.HPKEPub
 		m.result.MyCert = cred.Cert
 	}
 
 	return MarshalPayload(nil, p), nil
 }
 
-func (m *Machine) buildResponse(out []byte) ([]byte, *noise.CipherState, *noise.CipherState, error) {
+func (m *Machine) initiateEncrypt(out []byte, remoteHPKEPub []byte, cred *Credential) ([]byte, error) {
+	suite := cred.HPKESuite
+	if suite == nil {
+		return nil, fmt.Errorf("hpke suite not configured")
+	}
+
+	ctx, enc, err := hpke.SetupBaseS(remoteHPKEPub, []byte("nebula-hpke-msg1"), suite)
+	if err != nil {
+		return nil, fmt.Errorf("hpke setup: %w", err)
+	}
+
 	flags := m.myMsgFlags()
 	hsBytes, err := m.marshalOutgoing(flags)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 
-	// Extend out by header.Len to make room for the header. slices.Grow is a
-	// no-op when the cap is already sufficient (the zero-copy case where the
-	// caller passed a pre-sized buffer). header.Encode overwrites the new
-	// bytes, so they don't need to be zeroed.
+	ct, err := ctx.Seal(nil, hsBytes)
+	if err != nil {
+		return nil, fmt.Errorf("hpke seal: %w", err)
+	}
+
 	start := len(out)
 	out = slices.Grow(out, header.Len)[:start+header.Len]
 	header.Encode(
 		out[start:],
 		header.Version, header.Handshake, m.subtype,
 		m.result.RemoteIndex,
-		uint64(m.hs.MessageIndex()+1),
+		uint64(m.step+1),
 	)
 
-	// noise.WriteMessage appends the encrypted handshake message to out,
-	// reusing capacity when present.
-	//
-	// The (dKey, eKey) ordering here is correct for IX, where the responder
-	// completes the handshake by writing the stage-2 message. noise returns
-	// (cs1, cs2) where cs1 is the initiator->responder cipher (which is the
-	// responder's decrypt key). For 3-message patterns where an initiator
-	// finishes by writing the final message, this ordering would be wrong;
-	// revisit when XX/pqIX lands.
-	out, dKey, eKey, err := m.hs.WriteMessage(out, hsBytes)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("noise WriteMessage: %w", err)
-	}
+	out = append(out, enc...)
+	out = append(out, ct...)
 
-	return out, dKey, eKey, nil
+	m.step++
+	return out, nil
+}
+
+func (m *Machine) buildResponse(out []byte) ([]byte, *noise.CipherState, *noise.CipherState, error) {
+	return nil, nil, nil, fmt.Errorf("buildResponse not used in HPKE machine")
 }

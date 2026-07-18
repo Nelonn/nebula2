@@ -12,28 +12,24 @@ var (
 	errInvalidHandshakeDetails = errors.New("invalid handshake details")
 )
 
-// Payload represents the decoded fields of a handshake message.
-// Wire format is protobuf-compatible with NebulaHandshake{Details: NebulaHandshakeDetails{...}}.
 type Payload struct {
 	Cert           []byte
 	InitiatorIndex uint32
 	ResponderIndex uint32
 	Time           uint64
 	CertVersion    uint32
+	HPKEPublicKey  []byte
 }
 
-// Proto field numbers for NebulaHandshakeDetails
 const (
-	fieldCert           = 1 // bytes
-	fieldInitiatorIndex = 2 // uint32
-	fieldResponderIndex = 3 // uint32
-	fieldTime           = 5 // uint64
-	fieldCertVersion    = 8 // uint32
+	fieldCert           = 1
+	fieldInitiatorIndex = 2
+	fieldResponderIndex = 3
+	fieldTime           = 5
+	fieldCertVersion    = 8
+	fieldHPKEPublicKey  = 9
 )
 
-// MarshalPayload encodes a handshake payload in protobuf wire format compatible
-// with NebulaHandshake{Details: NebulaHandshakeDetails{...}}.
-// Returns out (which may be nil), with the marshalled Payload appended to it.
 func MarshalPayload(out []byte, p Payload) []byte {
 	var details []byte
 
@@ -57,14 +53,16 @@ func MarshalPayload(out []byte, p Payload) []byte {
 		details = protowire.AppendTag(details, fieldCertVersion, protowire.VarintType)
 		details = protowire.AppendVarint(details, uint64(p.CertVersion))
 	}
+	if len(p.HPKEPublicKey) > 0 {
+		details = protowire.AppendTag(details, fieldHPKEPublicKey, protowire.BytesType)
+		details = protowire.AppendBytes(details, p.HPKEPublicKey)
+	}
 
 	out = protowire.AppendTag(out, 1, protowire.BytesType)
 	out = protowire.AppendBytes(out, details)
-
 	return out
 }
 
-// UnmarshalPayload decodes a protobuf-encoded NebulaHandshake message.
 func UnmarshalPayload(b []byte) (Payload, error) {
 	var p Payload
 
@@ -105,11 +103,6 @@ func unmarshalPayloadDetails(p *Payload, b []byte) error {
 		}
 		b = b[n:]
 
-		// For known field numbers, reject any non-matching wire type as a
-		// hard error rather than silently skipping. The caller will catch
-		// missing-field cases downstream, but a wire-type mismatch on a tag
-		// we know is a peer protocol violation worth flagging here.
-		// Repeated occurrences of a singular field follow proto3 last-wins.
 		switch num {
 		case fieldCert:
 			if typ != protowire.BytesType {
@@ -160,6 +153,16 @@ func unmarshalPayloadDetails(p *Payload, b []byte) error {
 				return errInvalidHandshakeDetails
 			}
 			p.CertVersion = uint32(v)
+			b = b[n:]
+		case fieldHPKEPublicKey:
+			if typ != protowire.BytesType {
+				return errInvalidHandshakeDetails
+			}
+			v, n := protowire.ConsumeBytes(b)
+			if n < 0 {
+				return errInvalidHandshakeDetails
+			}
+			p.HPKEPublicKey = append([]byte(nil), v...)
 			b = b[n:]
 		default:
 			n := protowire.ConsumeFieldValue(num, typ, b)

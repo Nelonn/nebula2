@@ -25,6 +25,7 @@ type TBSCertificate struct {
 	NotBefore      time.Time
 	NotAfter       time.Time
 	PublicKey      []byte
+	HPKEPublicKey  []byte // HPKE public key for v3 certs
 	Curve          Curve
 	issuer         string
 }
@@ -110,6 +111,12 @@ func (t *TBSCertificate) SignWith(signer Certificate, curve Curve, sp SignerLamb
 		}
 	case Version2:
 		c = &certificateV2{}
+		err := c.fromTBSCertificate(t)
+		if err != nil {
+			return nil, err
+		}
+	case Version3:
+		c = &certificateV3{}
 		err := c.fromTBSCertificate(t)
 		if err != nil {
 			return nil, err

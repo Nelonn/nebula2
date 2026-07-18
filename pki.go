@@ -20,6 +20,7 @@ import (
 	"github.com/slackhq/nebula/cert"
 	"github.com/slackhq/nebula/config"
 	"github.com/slackhq/nebula/handshake"
+	"github.com/slackhq/nebula/hpke"
 	"github.com/slackhq/nebula/noiseutil"
 	"github.com/slackhq/nebula/util"
 )
@@ -37,10 +38,16 @@ type CertState struct {
 	v2Cert       cert.Certificate
 	v2Credential *handshake.Credential
 
+	v3Cert       cert.Certificate
+	v3Credential *handshake.Credential
+
 	initiatingVersion cert.Version
 	privateKey        []byte
 	pkcs11Backed      bool
 	cipher            string
+
+	hpkePrivateKey []byte
+	hpkeHybrid     bool
 
 	myVpnNetworks            []netip.Prefix
 	myVpnNetworksTable       *bart.Lite
@@ -222,6 +229,8 @@ func (cs *CertState) GetCredential(v cert.Version) *handshake.Credential {
 		return cs.v1Credential
 	case cert.Version2:
 		return cs.v2Credential
+	case cert.Version3:
+		return cs.v3Credential
 	}
 	return nil
 }
@@ -232,6 +241,8 @@ func (cs *CertState) getCertificate(v cert.Version) cert.Certificate {
 		return cs.v1Cert
 	case cert.Version2:
 		return cs.v2Cert
+	case cert.Version3:
+		return cs.v3Cert
 	}
 
 	return nil
@@ -257,6 +268,31 @@ func newCipherSuite(curve cert.Curve, pkcs11backed bool, cipher string) (noise.C
 	}
 	return noise.NewCipherSuite(dhFunc, noiseutil.CipherAESGCM, noise.HashSHA256), nil
 }
+
+func newDataPlaneCipherSuite(cipher string) (noise.CipherSuite, error) {
+	if cipher == "chachapoly" {
+		return noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashSHA256), nil
+	}
+	return noise.NewCipherSuite(noise.DH25519, noiseutil.CipherAESGCM, noise.HashSHA256), nil
+}
+
+func newHPKESuite(hybrid bool) *hpke.HPKESuite {
+	if hybrid {
+		return &hpke.HPKESuite{
+			KEM:    hpke.HybridKEM_X25519_MLKEM768,
+			KDFID:  hpke.KDFID_HKDF_SHA256,
+			AEADID: hpke.AEADID_AESGCM_256,
+		}
+	}
+	return &hpke.HPKESuite{
+		KEM:    hpke.DHKEM_X25519,
+		KDFID:  hpke.KDFID_HKDF_SHA256,
+		AEADID: hpke.AEADID_AESGCM_256,
+	}
+}
+
+func (cs *CertState) GetHPKEPriv() []byte  { return cs.hpkePrivateKey }
+func (cs *CertState) GetHPKEHybrid() bool  { return cs.hpkeHybrid }
 
 func (cs *CertState) String() string {
 	b, err := cs.MarshalJSON()
@@ -300,6 +336,11 @@ func newCertStateFromConfig(c *config.C, cipher string) (*CertState, error) {
 		return nil, err
 	}
 
+	hpkePriv, hpkeHybrid, err := loadHPKEPrivateKey(c)
+	if err != nil {
+		return nil, err
+	}
+
 	var rawCert []byte
 
 	pubPathOrPEM := c.GetString("pki.cert", "")
@@ -318,9 +359,8 @@ func newCertStateFromConfig(c *config.C, cipher string) (*CertState, error) {
 		}
 	}
 
-	var crt, v1, v2 cert.Certificate
+	var crt, v1, v2, v3 cert.Certificate
 	for {
-		// Load the certificate
 		crt, rawCert, err = loadCertificate(rawCert)
 		if err != nil {
 			return nil, err
@@ -337,6 +377,11 @@ func newCertStateFromConfig(c *config.C, cipher string) (*CertState, error) {
 				return nil, fmt.Errorf("v2 certificate already found in pki.cert")
 			}
 			v2 = crt
+		case cert.Version3:
+			if v3 != nil {
+				return nil, fmt.Errorf("v3 certificate already found in pki.cert")
+			}
+			v3 = crt
 		default:
 			return nil, fmt.Errorf("unknown certificate version %v", crt.Version())
 		}
@@ -346,15 +391,16 @@ func newCertStateFromConfig(c *config.C, cipher string) (*CertState, error) {
 		}
 	}
 
-	if v1 == nil && v2 == nil {
+	if v3 == nil && v1 == nil && v2 == nil {
 		return nil, errors.New("no certificates found in pki.cert")
 	}
 
-	useInitiatingVersion := uint32(1)
-	if v1 == nil {
-		// The only condition that requires v2 as the default is if only a v2 certificate is present
-		// We do this to avoid having to configure it specifically in the config file
-		useInitiatingVersion = 2
+	useInitiatingVersion := uint32(3)
+	if v3 == nil {
+		useInitiatingVersion = 1
+		if v1 == nil {
+			useInitiatingVersion = 2
+		}
 	}
 
 	rawInitiatingVersion := c.GetUint32("pki.initiating_version", useInitiatingVersion)
@@ -367,18 +413,42 @@ func newCertStateFromConfig(c *config.C, cipher string) (*CertState, error) {
 		initiatingVersion = cert.Version1
 	case 2:
 		initiatingVersion = cert.Version2
+	case 3:
+		if v3 == nil {
+			return nil, fmt.Errorf("can not use pki.initiating_version 3 without a v3 certificate in pki.cert")
+		}
+		initiatingVersion = cert.Version3
 	default:
 		return nil, fmt.Errorf("unknown pki.initiating_version: %v", rawInitiatingVersion)
 	}
 
-	return newCertState(initiatingVersion, v1, v2, isPkcs11, curve, rawKey, cipher)
+	return newCertState(initiatingVersion, v1, v2, isPkcs11, curve, rawKey, cipher, v3, hpkePriv, hpkeHybrid)
 }
 
-func newCertState(dv cert.Version, v1, v2 cert.Certificate, pkcs11backed bool, privateKeyCurve cert.Curve, privateKey []byte, cipher string) (*CertState, error) {
+func loadHPKEPrivateKey(c *config.C) ([]byte, bool, error) {
+	hpkePath := c.GetString("pki.hpke_key", "")
+	if hpkePath == "" {
+		hpkePath = c.GetString("pki.hpke-key", "")
+	}
+	if hpkePath == "" {
+		return nil, false, nil
+	}
+
+	pemData, err := os.ReadFile(hpkePath)
+	if err != nil {
+		return nil, false, fmt.Errorf("unable to read pki.hpke_key file %s: %s", hpkePath, err)
+	}
+
+	return cert.UnmarshalHPKEPrivateKeyFromPEM(pemData)
+}
+
+func newCertState(dv cert.Version, v1, v2 cert.Certificate, pkcs11backed bool, privateKeyCurve cert.Curve, privateKey []byte, cipher string, v3 cert.Certificate, hpkePriv []byte, hpkeHybrid bool) (*CertState, error) {
 	cs := CertState{
 		privateKey:               privateKey,
 		pkcs11Backed:             pkcs11backed,
 		cipher:                   cipher,
+		hpkePrivateKey:           hpkePriv,
+		hpkeHybrid:               hpkeHybrid,
 		myVpnNetworksTable:       new(bart.Lite),
 		myVpnAddrsTable:          new(bart.Lite),
 		myVpnBroadcastAddrsTable: new(bart.Lite),
@@ -388,27 +458,21 @@ func newCertState(dv cert.Version, v1, v2 cert.Certificate, pkcs11backed bool, p
 		if !slices.Equal(v1.PublicKey(), v2.PublicKey()) {
 			return nil, util.NewContextualError("v1 and v2 public keys are not the same, ignoring", nil, nil)
 		}
-
 		if v1.Curve() != v2.Curve() {
 			return nil, util.NewContextualError("v1 and v2 curve are not the same, ignoring", nil, nil)
 		}
-
 		if v1.Networks()[0] != v2.Networks()[0] {
 			return nil, util.NewContextualError("v1 and v2 networks are not the same", nil, nil)
 		}
-
 		cs.initiatingVersion = dv
 	}
 
 	if v1 != nil {
-		if pkcs11backed {
-			//NOTE: We do not currently have a method to verify a public private key pair when the private key is in an hsm
-		} else {
+		if !pkcs11backed {
 			if err := v1.VerifyPrivateKey(privateKeyCurve, privateKey); err != nil {
 				return nil, fmt.Errorf("private key is not a pair with public key in nebula cert")
 			}
 		}
-
 		v1hs, err := v1.MarshalForHandshakes()
 		if err != nil {
 			return nil, fmt.Errorf("error marshalling v1 certificate for handshake: %w", err)
@@ -418,22 +482,18 @@ func newCertState(dv cert.Version, v1, v2 cert.Certificate, pkcs11backed bool, p
 			return nil, err
 		}
 		cs.v1Cert = v1
-		cs.v1Credential = handshake.NewCredential(v1, v1hs, privateKey, ncs)
-
+		cs.v1Credential = handshake.NewCredential(v1, v1hs, nil, nil, ncs, nil)
 		if cs.initiatingVersion == 0 {
 			cs.initiatingVersion = cert.Version1
 		}
 	}
 
 	if v2 != nil {
-		if pkcs11backed {
-			//NOTE: We do not currently have a method to verify a public private key pair when the private key is in an hsm
-		} else {
+		if !pkcs11backed {
 			if err := v2.VerifyPrivateKey(privateKeyCurve, privateKey); err != nil {
 				return nil, fmt.Errorf("private key is not a pair with public key in nebula cert")
 			}
 		}
-
 		v2hs, err := v2.MarshalForHandshakes()
 		if err != nil {
 			return nil, fmt.Errorf("error marshalling v2 certificate for handshake: %w", err)
@@ -443,17 +503,43 @@ func newCertState(dv cert.Version, v1, v2 cert.Certificate, pkcs11backed bool, p
 			return nil, err
 		}
 		cs.v2Cert = v2
-		cs.v2Credential = handshake.NewCredential(v2, v2hs, privateKey, ncs)
-
+		cs.v2Credential = handshake.NewCredential(v2, v2hs, nil, nil, ncs, nil)
 		if cs.initiatingVersion == 0 {
 			cs.initiatingVersion = cert.Version2
 		}
 	}
 
+	if v3 != nil {
+		v3hs, err := v3.MarshalForHandshakes()
+		if err != nil {
+			return nil, fmt.Errorf("error marshalling v3 certificate for handshake: %w", err)
+		}
+		ncs, err := newDataPlaneCipherSuite(cipher)
+		if err != nil {
+			return nil, err
+		}
+		hSuite := newHPKESuite(hpkeHybrid)
+
+		var hpkePub []byte
+		if hk, ok := v3.(cert.HPKEPublicKeyer); ok {
+			hpkePub = hk.HPKEPublicKey()
+		}
+
+		cs.v3Cert = v3
+		cs.v3Credential = handshake.NewCredential(v3, v3hs, hpkePriv, hpkePub, ncs, hSuite)
+		if cs.initiatingVersion == 0 {
+			cs.initiatingVersion = cert.Version3
+		} else {
+			cs.initiatingVersion = dv
+		}
+	}
+
 	var crt cert.Certificate
-	crt = cs.getCertificate(cert.Version2)
+	crt = cs.getCertificate(cert.Version3)
 	if crt == nil {
-		// v2 certificates are a superset, only look at v1 if its all we have
+		crt = cs.getCertificate(cert.Version2)
+	}
+	if crt == nil {
 		crt = cs.getCertificate(cert.Version1)
 	}
 

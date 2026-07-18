@@ -6,9 +6,8 @@ import (
 	"io"
 	"os"
 
-	"github.com/slackhq/nebula/pkclient"
-
 	"github.com/slackhq/nebula/cert"
+	"github.com/slackhq/nebula/pkclient"
 )
 
 type keygenFlags struct {
@@ -17,6 +16,8 @@ type keygenFlags struct {
 	outPubPath *string
 	curve      *string
 	p11url     *string
+	hpke       *bool
+	hybrid     *bool
 }
 
 func newKeygenFlags() *keygenFlags {
@@ -26,6 +27,8 @@ func newKeygenFlags() *keygenFlags {
 	cf.outKeyPath = cf.set.String("out-key", "", "Required: path to write the private key to")
 	cf.curve = cf.set.String("curve", "25519", "ECDH Curve (25519, P256)")
 	cf.p11url = p11Flag(cf.set)
+	cf.hpke = cf.set.Bool("hpke", false, "Generate HPKE key pair (for v3 certs)")
+	cf.hybrid = cf.set.Bool("hybrid", false, "Generate HPKE hybrid key pair (X25519 + ML-KEM768, implies -hpke)")
 	return &cf
 }
 
@@ -37,6 +40,12 @@ func keygen(args []string, out io.Writer, errOut io.Writer) error {
 	}
 
 	isP11 := len(*cf.p11url) > 0
+	isHPKE := *cf.hpke || *cf.hybrid
+	isHybrid := *cf.hybrid
+
+	if isHPKE && isP11 {
+		return newHelpErrorf("cannot use -hpke with -pkcs11")
+	}
 
 	if !isP11 {
 		if err = mustFlagString("out-key", cf.outKeyPath); err != nil {
@@ -50,6 +59,32 @@ func keygen(args []string, out io.Writer, errOut io.Writer) error {
 	}
 
 	var pub, rawPriv []byte
+
+	if isHPKE {
+		hpkePub, hpkePriv, err := cert.GenerateHPKEKeyPair(isHybrid)
+		if err != nil {
+			return fmt.Errorf("error generating HPKE key pair: %w", err)
+		}
+
+		var claims ioClaims
+		if err := reserveOutputs(&claims,
+			"out-key", *cf.outKeyPath,
+			"out-pub", *cf.outPubPath,
+		); err != nil {
+			return err
+		}
+
+		err = writeOutput(*cf.outKeyPath, cert.MarshalHPKEPrivateKeyToPEM(hpkePriv, isHybrid), 0600, out)
+		if err != nil {
+			return fmt.Errorf("error while writing out-key: %s", err)
+		}
+		err = writeOutput(*cf.outPubPath, cert.MarshalHPKEPublicKeyToPEM(hpkePub, isHybrid), 0600, out)
+		if err != nil {
+			return fmt.Errorf("error while writing out-pub: %s", err)
+		}
+		return nil
+	}
+
 	var curve cert.Curve
 	if isP11 {
 		switch *cf.curve {

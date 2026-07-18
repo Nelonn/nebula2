@@ -86,8 +86,9 @@ type HandshakeHostInfo struct {
 	lastRelays                []netip.Addr     // Relays we attempted to use during the previous attempt
 	packetStore               []*cachedPacket  // A set of packets to be transmitted once the handshake completes
 
-	hostinfo *HostInfo
-	machine  *handshake.Machine // The handshake state machine, set during stage 0 (initiator) or beginHandshake (responder multi-message)
+	hostinfo      *HostInfo
+	machine       *handshake.Machine // The handshake state machine, set during stage 0 (initiator) or beginHandshake (responder multi-message)
+	remoteHPKEPub []byte             // Remote peer's HPKE public key, needed for HPKE handshake initiation
 }
 
 func (hh *HandshakeHostInfo) cachePacket(l *slog.Logger, t header.MessageType, st header.MessageSubType, packet []byte, f packetCallback, m *cachedPacketMetrics) {
@@ -153,7 +154,7 @@ func (hm *HandshakeManager) HandleIncoming(via ViaSender, packet []byte, h *head
 	// don't yet support) are dropped here rather than silently routed through
 	// the IX path. Add a case when introducing a new pattern.
 	switch h.Subtype {
-	case header.HandshakeIXPSK0:
+	case header.HandshakeIXPSK0, header.HandshakeHPKE0:
 		// supported
 	default:
 		hm.l.Debug("dropping handshake with unsupported subtype",
@@ -663,7 +664,7 @@ func (hm *HandshakeManager) buildStage0Packet(hh *HandshakeHostInfo) bool {
 	machine, err := handshake.NewMachine(
 		v, cs.GetCredential,
 		hm.certVerifier(), func() (uint32, error) { return hm.allocateIndex(hh) },
-		true, header.HandshakeIXPSK0,
+		true, header.HandshakeHPKE0,
 	)
 	if err != nil {
 		hm.f.l.Error("Failed to create handshake machine",
@@ -671,7 +672,20 @@ func (hm *HandshakeManager) buildStage0Packet(hh *HandshakeHostInfo) bool {
 		return false
 	}
 
-	msg, err := machine.Initiate(nil)
+	remoteHPKEPub := hh.remoteHPKEPub
+	if len(remoteHPKEPub) == 0 {
+		if cred.HPKEPub != nil {
+			remoteHPKEPub = cred.HPKEPub
+		}
+	}
+
+	if len(remoteHPKEPub) == 0 {
+		hm.f.l.Error("No remote HPKE public key available for handshake",
+			"vpnAddrs", hh.hostinfo.vpnAddrs)
+		return false
+	}
+
+	msg, err := machine.Initiate(nil, remoteHPKEPub)
 	if err != nil {
 		hm.f.l.Error("Failed to initiate handshake",
 			"vpnAddrs", hh.hostinfo.vpnAddrs, "error", err)
@@ -701,10 +715,11 @@ func (hm *HandshakeManager) beginHandshake(via ViaSender, packet []byte, h *head
 		return
 	}
 
+	subtype := header.HandshakeHPKE0
 	machine, err := handshake.NewMachine(
 		v, cs.GetCredential,
 		hm.certVerifier(), func() (uint32, error) { return generateIndex(f.l) },
-		false, header.HandshakeIXPSK0,
+		false, subtype,
 	)
 	if err != nil {
 		f.l.Error("Failed to create handshake machine", "from", via, "error", err)
@@ -1047,7 +1062,7 @@ func (hm *HandshakeManager) sendHandshakeResponse(via ViaSender, msg []byte, hos
 	// block if so.
 	logFields := []any{
 		"vpnAddrs", hostinfo.vpnAddrs,
-		"handshake", m{"stage": uint64(2), "style": header.SubTypeName(header.Handshake, header.HandshakeIXPSK0)},
+		"handshake", m{"stage": uint64(2), "style": "hpke0"},
 		"cached", cached,
 		"initiatorIndex", hostinfo.remoteIndexId,
 		"responderIndex", hostinfo.localIndexId,
@@ -1090,7 +1105,7 @@ func (hm *HandshakeManager) sendHandshakeResponse(via ViaSender, msg []byte, hos
 func (hm *HandshakeManager) handleCheckAndCompleteError(err error, existing, hostinfo *HostInfo, via ViaSender) {
 	f := hm.f
 	peerCert := hostinfo.ConnectionState.peerCert
-	hsFields := m{"stage": uint64(1), "style": header.SubTypeName(header.Handshake, header.HandshakeIXPSK0)}
+	hsFields := m{"stage": uint64(1), "style": "hpke0"}
 
 	switch err {
 	case ErrAlreadySeen:

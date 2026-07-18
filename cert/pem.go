@@ -64,13 +64,18 @@ func SplitPEM(data []byte, atEOF bool) (advance int, token []byte, err error) {
 const ( //cert banners
 	CertificateBanner   = "NEBULA CERTIFICATE"
 	CertificateV2Banner = "NEBULA CERTIFICATE V2"
+	CertificateV3Banner = "NEBULA CERTIFICATE V3"
 )
 
 const ( //key-agreement-key banners
-	X25519PrivateKeyBanner = "NEBULA X25519 PRIVATE KEY"
-	X25519PublicKeyBanner  = "NEBULA X25519 PUBLIC KEY"
-	P256PrivateKeyBanner   = "NEBULA P256 PRIVATE KEY"
-	P256PublicKeyBanner    = "NEBULA P256 PUBLIC KEY"
+	X25519PrivateKeyBanner           = "NEBULA X25519 PRIVATE KEY"
+	X25519PublicKeyBanner            = "NEBULA X25519 PUBLIC KEY"
+	P256PrivateKeyBanner             = "NEBULA P256 PRIVATE KEY"
+	P256PublicKeyBanner              = "NEBULA P256 PUBLIC KEY"
+	HPKEX25519PrivateKeyBanner       = "NEBULA HPKE X25519 PRIVATE KEY"
+	HPKEX25519PublicKeyBanner        = "NEBULA HPKE X25519 PUBLIC KEY"
+	HPKEHybridPrivateKeyBanner       = "NEBULA HPKE HYBRID X25519 MLKEM768 PRIVATE KEY"
+	HPKEHybridPublicKeyBanner        = "NEBULA HPKE HYBRID X25519 MLKEM768 PUBLIC KEY"
 )
 
 /* including "ECDSA" in the P256 banners is a clue that these keys should be used only for signing */
@@ -109,6 +114,8 @@ func unmarshalCertificateBlock(block *pem.Block) (Certificate, error) {
 		return unmarshalCertificateV1(block.Bytes, nil)
 	case CertificateV2Banner:
 		return unmarshalCertificateV2(block.Bytes, nil, Curve_CURVE25519)
+	case CertificateV3Banner:
+		return unmarshalCertificateV3(block.Bytes, nil, Curve_CURVE25519)
 	default:
 		return nil, ErrInvalidPEMCertificateBanner
 	}
@@ -210,6 +217,62 @@ func MarshalPrivateKeyToPEM(curve Curve, b []byte) []byte {
 		return pem.EncodeToMemory(&pem.Block{Type: P256PrivateKeyBanner, Bytes: b})
 	default:
 		return nil
+	}
+}
+
+func MarshalHPKEPrivateKeyToPEM(b []byte, hybrid bool) []byte {
+	if hybrid {
+		return pem.EncodeToMemory(&pem.Block{Type: HPKEHybridPrivateKeyBanner, Bytes: b})
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: HPKEX25519PrivateKeyBanner, Bytes: b})
+}
+
+func MarshalHPKEPublicKeyToPEM(b []byte, hybrid bool) []byte {
+	if hybrid {
+		return pem.EncodeToMemory(&pem.Block{Type: HPKEHybridPublicKeyBanner, Bytes: b})
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: HPKEX25519PublicKeyBanner, Bytes: b})
+}
+
+func UnmarshalHPKEPrivateKeyFromPEM(b []byte) ([]byte, bool, error) {
+	k, _ := pem.Decode(b)
+	if k == nil {
+		return nil, false, fmt.Errorf("input did not contain a valid PEM encoded block")
+	}
+	switch k.Type {
+	case HPKEX25519PrivateKeyBanner:
+		if len(k.Bytes) != 32 {
+			return nil, false, fmt.Errorf("key was not 32 bytes, is invalid X25519 HPKE private key")
+		}
+		return k.Bytes, false, nil
+	case HPKEHybridPrivateKeyBanner:
+		if len(k.Bytes) < 32 {
+			return nil, false, fmt.Errorf("key is too short for hybrid HPKE private key")
+		}
+		return k.Bytes, true, nil
+	default:
+		return nil, false, fmt.Errorf("bytes did not contain a proper HPKE private key banner")
+	}
+}
+
+func UnmarshalHPKEPublicKeyFromPEM(b []byte) ([]byte, bool, error) {
+	k, _ := pem.Decode(b)
+	if k == nil {
+		return nil, false, fmt.Errorf("input did not contain a valid PEM encoded block")
+	}
+	switch k.Type {
+	case HPKEX25519PublicKeyBanner:
+		if len(k.Bytes) != 32 {
+			return nil, false, fmt.Errorf("key was not 32 bytes, is invalid X25519 HPKE public key")
+		}
+		return k.Bytes, false, nil
+	case HPKEHybridPublicKeyBanner:
+		if len(k.Bytes) < 32 {
+			return nil, false, fmt.Errorf("key is too short for hybrid HPKE public key")
+		}
+		return k.Bytes, true, nil
+	default:
+		return nil, false, fmt.Errorf("bytes did not contain a proper HPKE public key banner")
 	}
 }
 

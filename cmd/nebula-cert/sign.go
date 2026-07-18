@@ -33,6 +33,10 @@ type signFlags struct {
 	outQRPath      *string
 	groups         *string
 
+	hpkePubPath *string
+	hpkeKeyPath *string
+	hybrid      *bool
+
 	p11url *string
 
 	// Deprecated options
@@ -43,18 +47,23 @@ type signFlags struct {
 func newSignFlags() *signFlags {
 	sf := signFlags{set: flag.NewFlagSet("sign", flag.ContinueOnError)}
 	sf.set.Usage = func() {}
-	sf.version = sf.set.Uint("version", 0, "Optional: version of the certificate format to use. The default is to match the version of the signing CA")
+	sf.version = sf.set.Uint("version", 0, "Optional: version of the certificate format to use (1, 2, or 3). The default is to match the version of the signing CA")
 	sf.caKeyPath = sf.set.String("ca-key", "ca.key", "Optional: path to the signing CA key")
 	sf.caCertPath = sf.set.String("ca-crt", "ca.crt", "Optional: path to the signing CA cert")
 	sf.name = sf.set.String("name", "", "Required: name of the cert, usually a hostname")
 	sf.networks = sf.set.String("networks", "", "Required: comma separated list of ip address and network in CIDR notation to assign to this cert")
 	sf.unsafeNetworks = sf.set.String("unsafe-networks", "", "Optional: comma separated list of ip address and network in CIDR notation. Unsafe networks this cert can route for")
 	sf.duration = sf.set.Duration("duration", 0, "Optional: how long the cert should be valid for. The default is 1 second before the signing cert expires. Valid time units are seconds: \"s\", minutes: \"m\", hours: \"h\"")
-	sf.inPubPath = sf.set.String("in-pub", "", "Optional (if out-key not set): path to read a previously generated public key")
-	sf.outKeyPath = sf.set.String("out-key", "", "Optional (if in-pub not set): path to write the private key to")
+	sf.inPubPath = sf.set.String("in-pub", "", "Optional (if out-key not set): path to read a previously generated public signing key")
+	sf.outKeyPath = sf.set.String("out-key", "", "Optional (if in-pub not set): path to write the private signing key to")
 	sf.outCertPath = sf.set.String("out-crt", "", "Optional: path to write the certificate to")
 	sf.outQRPath = sf.set.String("out-qr", "", "Optional: output a qr code image (png) of the certificate")
 	sf.groups = sf.set.String("groups", "", "Optional: comma separated list of groups")
+
+	sf.hpkePubPath = sf.set.String("hpke-pub", "", "Path to the HPKE public key (for v3 certificates)")
+	sf.hpkeKeyPath = sf.set.String("hpke-key", "", "Path to write the HPKE private key (for v3 certs, if -hpke-pub not set)")
+	sf.hybrid = sf.set.Bool("hybrid", false, "Generate hybrid HPKE key (X25519 + ML-KEM768, for v3 certs)")
+
 	sf.p11url = p11Flag(sf.set)
 
 	sf.ip = sf.set.String("ip", "", "Deprecated, see -networks")
@@ -70,6 +79,7 @@ func signCert(args []string, out io.Writer, errOut io.Writer, pr PasswordReader)
 	}
 
 	isP11 := len(*sf.p11url) > 0
+	isV3 := *sf.version == 3
 
 	if !isP11 {
 		if err := mustFlagString("ca-key", sf.caKeyPath); err != nil {
@@ -92,17 +102,15 @@ func signCert(args []string, out io.Writer, errOut io.Writer, pr PasswordReader)
 	var v4Networks []netip.Prefix
 	var v6Networks []netip.Prefix
 	if *sf.networks == "" && *sf.ip != "" {
-		// Pull up deprecated -ip flag if needed
 		*sf.networks = *sf.ip
 	}
-
 	if len(*sf.networks) == 0 {
 		return newHelpErrorf("-networks is required")
 	}
 
 	version := cert.Version(*sf.version)
-	if version != 0 && version != cert.Version1 && version != cert.Version2 {
-		return newHelpErrorf("-version must be either %v or %v", cert.Version1, cert.Version2)
+	if version != 0 && version != cert.Version1 && version != cert.Version2 && version != cert.Version3 {
+		return newHelpErrorf("-version must be %v, %v, or %v", cert.Version1, cert.Version2, cert.Version3)
 	}
 
 	if *sf.outKeyPath == "" {
@@ -117,6 +125,7 @@ func signCert(args []string, out io.Writer, errOut io.Writer, pr PasswordReader)
 		"ca-key", *sf.caKeyPath,
 		"ca-crt", *sf.caCertPath,
 		"in-pub", *sf.inPubPath,
+		"hpke-pub", *sf.hpkePubPath,
 	); err != nil {
 		return err
 	}
@@ -124,6 +133,7 @@ func signCert(args []string, out io.Writer, errOut io.Writer, pr PasswordReader)
 		"out-key", *sf.outKeyPath,
 		"out-crt", *sf.outCertPath,
 		"out-qr", *sf.outQRPath,
+		"hpke-key", *sf.hpkeKeyPath,
 	); err != nil {
 		return err
 	}
@@ -138,23 +148,19 @@ func signCert(args []string, out io.Writer, errOut io.Writer, pr PasswordReader)
 			return fmt.Errorf("error while reading ca-key: %s", err)
 		}
 
-		// naively attempt to decode the private key as though it is not encrypted
 		caKey, _, curve, err = cert.UnmarshalSigningPrivateKeyFromPEM(rawCAKey)
 		if errors.Is(err, cert.ErrPrivateKeyEncrypted) {
 			var passphrase []byte
 			passphrase = []byte(os.Getenv("NEBULA_CA_PASSPHRASE"))
 			if len(passphrase) == 0 {
-				// ask for a passphrase until we get one
 				for i := 0; i < 5; i++ {
 					errOut.Write([]byte("Enter passphrase: "))
 					passphrase, err = pr.ReadPassword()
-
 					if errors.Is(err, ErrNoTerminal) {
 						return fmt.Errorf("ca-key is encrypted and must be decrypted interactively")
 					} else if err != nil {
 						return fmt.Errorf("error reading password: %s", err)
 					}
-
 					if len(passphrase) > 0 {
 						break
 					}
@@ -196,7 +202,6 @@ func signCert(args []string, out io.Writer, errOut io.Writer, pr PasswordReader)
 		version = caCert.Version()
 	}
 
-	// if no duration is given, expire one second before the root expires
 	if *sf.duration <= 0 {
 		*sf.duration = time.Until(caCert.NotAfter()) - time.Second*1
 	}
@@ -209,7 +214,6 @@ func signCert(args []string, out io.Writer, errOut io.Writer, pr PasswordReader)
 				if err != nil {
 					return newHelpErrorf("invalid -networks definition: %s", rs)
 				}
-
 				if n.Addr().Is4() {
 					v4Networks = append(v4Networks, n)
 				} else {
@@ -222,10 +226,8 @@ func signCert(args []string, out io.Writer, errOut io.Writer, pr PasswordReader)
 	var v4UnsafeNetworks []netip.Prefix
 	var v6UnsafeNetworks []netip.Prefix
 	if *sf.unsafeNetworks == "" && *sf.subnets != "" {
-		// Pull up deprecated -subnets flag if needed
 		*sf.unsafeNetworks = *sf.subnets
 	}
-
 	if *sf.unsafeNetworks != "" {
 		for _, rs := range strings.Split(*sf.unsafeNetworks, ",") {
 			rs := strings.Trim(rs, " ")
@@ -234,7 +236,6 @@ func signCert(args []string, out io.Writer, errOut io.Writer, pr PasswordReader)
 				if err != nil {
 					return newHelpErrorf("invalid -unsafe-networks definition: %s", rs)
 				}
-
 				if n.Addr().Is4() {
 					v4UnsafeNetworks = append(v4UnsafeNetworks, n)
 				} else {
@@ -274,7 +275,6 @@ func signCert(args []string, out io.Writer, errOut io.Writer, pr PasswordReader)
 		if err != nil {
 			return fmt.Errorf("error while reading in-pub: %s", err)
 		}
-
 		pub, _, pubCurve, err = cert.UnmarshalPublicKeyFromPEM(rawPub)
 		if err != nil {
 			return fmt.Errorf("error while parsing in-pub: %s", err)
@@ -287,8 +287,33 @@ func signCert(args []string, out io.Writer, errOut io.Writer, pr PasswordReader)
 		if err != nil {
 			return fmt.Errorf("error while getting public key with PKCS#11: %w", err)
 		}
-	} else {
+	} else if !isV3 {
 		pub, rawPriv = newKeypair(curve)
+	}
+
+	// HPKE key handling for v3 certificates
+	var hpkePub, hpkePriv []byte
+	var hpkeHybrid bool
+	if isV3 {
+		hpkeHybrid = *sf.hybrid
+		if *sf.hpkePubPath != "" {
+			rawHPKEPub, err := readInput("hpke-pub", *sf.hpkePubPath, &claims)
+			if err != nil {
+				return fmt.Errorf("error while reading hpke-pub: %s", err)
+			}
+			hpkePub, _, _, err = cert.UnmarshalPublicKeyFromPEM(rawHPKEPub)
+			if err != nil {
+				hpkePub, _, err = cert.UnmarshalHPKEPublicKeyFromPEM(rawHPKEPub)
+				if err != nil {
+					return fmt.Errorf("error while parsing hpke-pub: %w", err)
+				}
+			}
+		} else {
+			hpkePub, hpkePriv, err = cert.GenerateHPKEKeyPair(hpkeHybrid)
+			if err != nil {
+				return fmt.Errorf("error generating HPKE key pair: %w", err)
+			}
+		}
 	}
 
 	if !isStdio(*sf.outCertPath) {
@@ -304,15 +329,12 @@ func signCert(args []string, out io.Writer, errOut io.Writer, pr PasswordReader)
 
 	switch version {
 	case cert.Version1:
-		// Make sure we have only one ipv4 address
 		if len(v4Networks) != 1 {
 			return newHelpErrorf("invalid -networks definition: v1 certificates can only have a single ipv4 address")
 		}
-
 		if len(v6Networks) > 0 {
 			return newHelpErrorf("invalid -networks definition: v1 certificates can only contain ipv4 addresses")
 		}
-
 		if len(v6UnsafeNetworks) > 0 {
 			return newHelpErrorf("invalid -unsafe-networks definition: v1 certificates can only contain ipv4 addresses")
 		}
@@ -333,16 +355,12 @@ func signCert(args []string, out io.Writer, errOut io.Writer, pr PasswordReader)
 		var nc cert.Certificate
 		if p11Client == nil {
 			nc, err = t.Sign(caCert, curve, caKey)
-			if err != nil {
-				return fmt.Errorf("error while signing: %w", err)
-			}
 		} else {
 			nc, err = t.SignWith(caCert, curve, p11Client.SignASN1)
-			if err != nil {
-				return fmt.Errorf("error while signing with PKCS#11: %w", err)
-			}
 		}
-
+		if err != nil {
+			return fmt.Errorf("error while signing: %w", err)
+		}
 		crts = append(crts, nc)
 
 	case cert.Version2:
@@ -362,32 +380,70 @@ func signCert(args []string, out io.Writer, errOut io.Writer, pr PasswordReader)
 		var nc cert.Certificate
 		if p11Client == nil {
 			nc, err = t.Sign(caCert, curve, caKey)
-			if err != nil {
-				return fmt.Errorf("error while signing: %w", err)
-			}
 		} else {
 			nc, err = t.SignWith(caCert, curve, p11Client.SignASN1)
-			if err != nil {
-				return fmt.Errorf("error while signing with PKCS#11: %w", err)
-			}
+		}
+		if err != nil {
+			return fmt.Errorf("error while signing: %w", err)
+		}
+		crts = append(crts, nc)
+
+	case cert.Version3:
+		if isP11 {
+			return newHelpErrorf("pkcs11 is not supported for v3 certificates")
 		}
 
+		t := &cert.TBSCertificate{
+			Version:        cert.Version3,
+			Name:           *sf.name,
+			Networks:       append(v4Networks, v6Networks...),
+			Groups:         groups,
+			UnsafeNetworks: append(v4UnsafeNetworks, v6UnsafeNetworks...),
+			NotBefore:      notBefore,
+			NotAfter:       notAfter,
+			PublicKey:      pub,
+			HPKEPublicKey:  hpkePub,
+			IsCA:           false,
+			Curve:          curve,
+		}
+
+		var nc cert.Certificate
+		nc, err = t.Sign(caCert, curve, caKey)
+		if err != nil {
+			return fmt.Errorf("error while signing v3 certificate: %w", err)
+		}
 		crts = append(crts, nc)
+
 	default:
-		// this should be unreachable
 		return fmt.Errorf("invalid version: %d", version)
 	}
 
-	if !isP11 && *sf.inPubPath == "" {
+	if !isP11 && *sf.inPubPath == "" && !isV3 {
 		if !isStdio(*sf.outKeyPath) {
 			if _, err := os.Stat(*sf.outKeyPath); err == nil {
 				return fmt.Errorf("refusing to overwrite existing key: %s", *sf.outKeyPath)
 			}
 		}
-
 		err = writeOutput(*sf.outKeyPath, cert.MarshalPrivateKeyToPEM(curve, rawPriv), 0600, out)
 		if err != nil {
 			return fmt.Errorf("error while writing out-key: %s", err)
+		}
+	}
+
+	// Write HPKE private key for v3 certs
+	if isV3 && len(hpkePriv) > 0 {
+		hpkeKeyPath := *sf.hpkeKeyPath
+		if hpkeKeyPath == "" {
+			hpkeKeyPath = *sf.name + ".hpke.key"
+		}
+		if !isStdio(hpkeKeyPath) {
+			if _, err := os.Stat(hpkeKeyPath); err == nil {
+				return fmt.Errorf("refusing to overwrite existing hpke key: %s", hpkeKeyPath)
+			}
+		}
+		err = writeOutput(hpkeKeyPath, cert.MarshalHPKEPrivateKeyToPEM(hpkePriv, hpkeHybrid), 0600, out)
+		if err != nil {
+			return fmt.Errorf("error while writing hpke-key: %s", err)
 		}
 	}
 
@@ -410,7 +466,6 @@ func signCert(args []string, out io.Writer, errOut io.Writer, pr PasswordReader)
 		if err != nil {
 			return fmt.Errorf("error while generating qr code: %s", err)
 		}
-
 		err = writeOutput(*sf.outQRPath, b, 0600, out)
 		if err != nil {
 			return fmt.Errorf("error while writing out-qr: %s", err)
@@ -436,12 +491,10 @@ func x25519Keypair() ([]byte, []byte) {
 	if _, err := io.ReadFull(rand.Reader, privkey); err != nil {
 		panic(err)
 	}
-
 	pubkey, err := curve25519.X25519(privkey, curve25519.Basepoint)
 	if err != nil {
 		panic(err)
 	}
-
 	return pubkey, privkey
 }
 

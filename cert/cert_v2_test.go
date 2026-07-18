@@ -117,15 +117,14 @@ func TestCertificateV2_Unmarshal(t *testing.T) {
 	_, err = unmarshalCertificateV2(certWithPubkey, pubKey, Curve_CURVE25519)
 	require.ErrorIs(t, err, ErrCertPubkeyPresent)
 
-	// Certs must have pubkeys
-	_, err = unmarshalCertificateV2(certWithoutPubkey, nil, Curve_CURVE25519)
-	require.ErrorIs(t, err, ErrBadFormat)
-
-	// Ensure proper unmarshal if a pubkey is passed in
-	nc2, err := unmarshalCertificateV2(certWithoutPubkey, pubKey, Curve_CURVE25519)
+	// Handshake format certs now include the public key
+	nc2, err := unmarshalCertificateV2(certWithoutPubkey, nil, Curve_CURVE25519)
 	require.NoError(t, err)
-
 	assert.Equal(t, nc.PublicKey(), nc2.PublicKey())
+
+	// Passing an additional pubkey when the cert already has one is an error
+	_, err = unmarshalCertificateV2(certWithoutPubkey, pubKey, Curve_CURVE25519)
+	require.ErrorIs(t, err, ErrCertPubkeyPresent)
 }
 
 func TestCertificateV2_PublicKeyPem(t *testing.T) {
