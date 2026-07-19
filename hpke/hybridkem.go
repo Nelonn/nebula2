@@ -121,6 +121,9 @@ func (*hybridKEMX25519MLKEM768) AuthDecap(enc, skR, pkS []byte) ([]byte, error) 
 	if len(skR) != HybridPrivKeyLen {
 		return nil, fmt.Errorf("hpke: invalid hybrid private key length %d", len(skR))
 	}
+	if len(pkS) < X25519PK {
+		return nil, fmt.Errorf("hpke: invalid hybrid sender public key length %d", len(pkS))
+	}
 	dhSS, err := DHKEM_X25519.AuthDecap(enc[:X25519PK], skR[:X25519PK], pkS[:X25519PK])
 	if err != nil {
 		return nil, err

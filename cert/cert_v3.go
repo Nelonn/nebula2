@@ -6,7 +6,6 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
-	"crypto/hmac"
 	"crypto/mlkem"
 	"crypto/rand"
 	"crypto/sha256"
@@ -605,7 +604,7 @@ func VerifyHPKEPrivateKey(hpkePub, hpkePriv []byte) error {
 		if err != nil {
 			return ErrInvalidPrivateKey
 		}
-		if !hmac.Equal(pub, hpkePub) {
+		if !bytes.Equal(pub, hpkePub) {
 			return ErrPublicPrivateKeyMismatch
 		}
 		return nil
@@ -616,7 +615,7 @@ func VerifyHPKEPrivateKey(hpkePub, hpkePriv []byte) error {
 		if err != nil {
 			return ErrInvalidPrivateKey
 		}
-		if !hmac.Equal(pub, hpkePub[:32]) {
+		if !bytes.Equal(pub, hpkePub[:32]) {
 			return ErrPublicPrivateKeyMismatch
 		}
 		mlkemPriv, err := mlkem.NewDecapsulationKey768(hpkePriv[32:])
@@ -624,7 +623,7 @@ func VerifyHPKEPrivateKey(hpkePub, hpkePriv []byte) error {
 			return ErrInvalidPrivateKey
 		}
 		expectedPub := mlkemPriv.EncapsulationKey().Bytes()
-		if !hmac.Equal(expectedPub, hpkePub[32:]) {
+		if !bytes.Equal(expectedPub, hpkePub[32:]) {
 			return ErrPublicPrivateKeyMismatch
 		}
 		return nil

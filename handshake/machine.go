@@ -1,6 +1,7 @@
 package handshake
 
 import (
+	"bytes"
 	"crypto/hkdf"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -424,6 +425,22 @@ func (m *Machine) validateCert(payload Payload) error {
 	if err != nil {
 		m.failed = true
 		return fmt.Errorf("recombine cert: %w", err)
+	}
+
+	// V3 certs carry the HPKE key inside. Lower versions use payload.HPKEPublicKey.
+	// Bind the payload's HPKE key to the validated certificate to prevent
+	// HPKE-key-swapping attacks.
+	certHPKEPub := payload.HPKEPublicKey
+	if hk, ok := rc.(cert.HPKEPublicKeyer); ok {
+		if k := hk.HPKEPublicKey(); len(k) > 0 {
+			certHPKEPub = k
+		}
+	}
+	if len(certHPKEPub) > 0 && len(payload.HPKEPublicKey) > 0 {
+		if !bytes.Equal(certHPKEPub, payload.HPKEPublicKey) {
+			m.failed = true
+			return fmt.Errorf("payload HPKE key does not match certificate HPKE key")
+		}
 	}
 
 	if rc.Version() != m.myVersion {
