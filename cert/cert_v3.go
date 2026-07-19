@@ -164,6 +164,21 @@ func (c *certificateV3) MarshalForHandshakes() ([]byte, error) {
 	var b cryptobyte.Builder
 	b.AddASN1(asn1.SEQUENCE, func(b *cryptobyte.Builder) {
 		b.AddBytes(c.rawDetails)
+		if c.curve != Curve_CURVE25519 {
+			b.AddASN1(TagCertCurve, func(b *cryptobyte.Builder) {
+				b.AddBytes([]byte{byte(c.curve)})
+			})
+		}
+		if c.publicKey != nil {
+			b.AddASN1(TagCertPublicKey, func(b *cryptobyte.Builder) {
+				b.AddBytes(c.publicKey)
+			})
+		}
+		if c.hpkePublicKey != nil {
+			b.AddASN1(TagCertHPKEPublicKey, func(b *cryptobyte.Builder) {
+				b.AddBytes(c.hpkePublicKey)
+			})
+		}
 		b.AddASN1(TagCertSignature, func(b *cryptobyte.Builder) {
 			b.AddBytes(c.signature)
 		})

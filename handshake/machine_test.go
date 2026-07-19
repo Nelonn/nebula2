@@ -260,7 +260,7 @@ func TestHPKEMsg2Prefix(t *testing.T) {
 	require.NotNil(t, result)
 
 	// First 4 bytes must be non-zero initiator index
-	require.Greater(t, len(resp), len(msg1))
+	require.GreaterOrEqual(t, len(resp), 4)
 	idx := uint32(resp[0])<<24 | uint32(resp[1])<<16 | uint32(resp[2])<<8 | uint32(resp[3])
 	assert.Equal(t, uint32(100), idx, "first 4 bytes should be initiator's local index")
 

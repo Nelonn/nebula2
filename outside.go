@@ -41,6 +41,10 @@ func (f *Interface) readOutsidePackets(via ViaSender, out []byte, packet []byte,
 			f.processDataPacketV2(via, hi, packet, decHdr, nb, out, lhf, fwPacket, q, localCache)
 			return
 		}
+		if hi := f.hostMap.QueryRelayIndex(sessionID); hi != nil && hi.ConnectionState != nil {
+			f.processDataPacketV2(via, hi, packet, decHdr, nb, out, lhf, fwPacket, q, localCache)
+			return
+		}
 	}
 
 	// 2. Handshake msg2 continuation — O(1) index lookup
@@ -80,6 +84,7 @@ func (f *Interface) readOutsidePackets(via ViaSender, out []byte, packet []byte,
 }
 
 func (f *Interface) processDataPacketV2(via ViaSender, hostinfo *HostInfo, packet []byte, decHdr [16]byte, nb, out []byte, lhf *LightHouseHandler, fwPacket *firewall.Packet, q int, localCache firewall.ConntrackCache) {
+	sessionID := binary.BigEndian.Uint32(decHdr[0:4])
 	c := binary.BigEndian.Uint64(decHdr[6:14])
 	msgType := header.MessageType(decHdr[4])
 	msgSubtype := header.MessageSubType(decHdr[5])
@@ -106,9 +111,15 @@ func (f *Interface) processDataPacketV2(via ViaSender, hostinfo *HostInfo, packe
 		sigValue := packet[adLen:]
 		pt, err = ci.dKey.DecryptDanger(out, ad, sigValue, c, nb)
 		if err == nil {
+			if !ci.window.Update(f.l, c) {
+				return
+			}
+			f.handleHostRoaming(hostinfo, via)
+			f.connectionManager.In(hostinfo)
+			f.connectionManager.RelayUsed(sessionID)
 			// pt is nil (sender encrypted nil plaintext). The inner packet is ad[16:].
 			if len(ad) > 16 {
-				f.processRelayInner(via, hostinfo, ad[16:], nb, out, q, localCache)
+				f.processRelayInner(via, hostinfo, sessionID, ad[16:], nb, out, lhf, fwPacket, q, localCache)
 			}
 			return
 		}
@@ -163,37 +174,42 @@ func (f *Interface) processDataPacketV2(via ViaSender, hostinfo *HostInfo, packe
 	}
 }
 
-func (f *Interface) processRelayInner(via ViaSender, outerHI *HostInfo, innerPacket []byte, nb, out []byte, q int, localCache firewall.ConntrackCache) {
+func (f *Interface) processRelayInner(via ViaSender, outerHI *HostInfo, outerRelayIndex uint32, innerPacket []byte, nb, out []byte, lhf *LightHouseHandler, fwPacket *firewall.Packet, q int, localCache firewall.ConntrackCache) {
 	if len(innerPacket) < 16 {
 		return
 	}
-	var innerDecHdr [16]byte
-	if block := f.pki.HeaderBlock(); block != nil {
-		block.Decrypt(innerDecHdr[:], innerPacket[:16])
-	} else {
-		return
-	}
-	innerSessionID := binary.BigEndian.Uint32(innerDecHdr[0:4])
-	innerHI := f.hostMap.QueryIndex(innerSessionID)
-	if innerHI == nil || innerHI.ConnectionState == nil {
-		return
-	}
 
-	relay, ok := outerHI.relayState.QueryRelayForByIdx(innerSessionID)
+	relay, ok := outerHI.relayState.QueryRelayForByIdx(outerRelayIndex)
 	if !ok {
 		return
 	}
 
 	switch relay.Type {
 	case TerminalType:
-		f.processDataPacketV2(via, innerHI, innerPacket, innerDecHdr, nb, out, nil, nil, q, localCache)
-	case ForwardingType:
-		targetRelay, ok2 := innerHI.relayState.QueryRelayForByIdx(innerSessionID)
-		if !ok2 || targetRelay.State != Established {
+		var innerDecHdr [16]byte
+		if block := f.pki.HeaderBlock(); block != nil {
+			block.Decrypt(innerDecHdr[:], innerPacket[:16])
+		} else {
 			return
 		}
-		// Forward the inner packet as AD through the relay
-		f.SendVia(innerHI, targetRelay, innerPacket, nb, out, true)
+		innerSessionID := binary.BigEndian.Uint32(innerDecHdr[0:4])
+		innerHI := f.hostMap.QueryIndex(innerSessionID)
+		if innerHI == nil || innerHI.ConnectionState == nil {
+			return
+		}
+		relayedVia := ViaSender{
+			UdpAddr:   via.UdpAddr,
+			relayHI:   outerHI,
+			relay:     relay,
+			IsRelayed: true,
+		}
+		f.processDataPacketV2(relayedVia, innerHI, innerPacket, innerDecHdr, nb, out, lhf, fwPacket, q, localCache)
+	case ForwardingType:
+		targetHI, targetRelay, err := f.hostMap.QueryVpnAddrsRelayFor(outerHI.vpnAddrs, relay.PeerAddr)
+		if err != nil || targetRelay.State != Established {
+			return
+		}
+		f.SendVia(targetHI, targetRelay, innerPacket, nb, out, false)
 	default:
 		return
 	}

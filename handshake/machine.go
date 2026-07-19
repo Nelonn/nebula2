@@ -104,6 +104,10 @@ func (m *Machine) SetSS1(ss []byte) {
 	m.ss1 = ss
 }
 
+func (m *Machine) SetPeerHPKEPub(pk []byte) {
+	m.peerHPKEPub = append([]byte(nil), pk...)
+}
+
 func (m *Machine) requireComplete() error {
 	if !m.payloadSet || !m.remoteCertSet {
 		m.failed = true
@@ -127,7 +131,7 @@ func (m *Machine) peerMsgFlags() msgFlags {
 	return msgFlags{}
 }
 
-// Initiate builds msg1: [enc] + [ciphertext] — no plaintext header.
+// Initiate builds msg1: [sender_hpke_pub] + [enc] + [ciphertext].
 func (m *Machine) Initiate(out []byte, remoteHPKEPub []byte) ([]byte, error) {
 	if m.failed {
 		return nil, ErrMachineFailed
@@ -152,7 +156,7 @@ func (m *Machine) Initiate(out []byte, remoteHPKEPub []byte) ([]byte, error) {
 }
 
 // ProcessPacket handles an incoming handshake message.
-// For responder: packet = [enc] + [ct]  (msg1 from initiator)
+// For responder: packet = [sender_hpke_pub] + [enc] + [ct]  (msg1 from initiator)
 // For initiator: packet = [enc] + [ct]  (msg2 from responder, already stripped of index prefix)
 func (m *Machine) ProcessPacket(out, packet []byte) ([]byte, *Result, error) {
 	if m.failed {
@@ -177,28 +181,44 @@ func (m *Machine) ProcessPacket(out, packet []byte) ([]byte, *Result, error) {
 		return nil, nil, fmt.Errorf("hpke suite not configured")
 	}
 
-	kem := suite.KEM
-	encLen := kem.EncLen()
-
-	if len(packet) < encLen+1 {
-		return nil, nil, ErrPacketTooShort
-	}
-	enc := packet[:encLen]
-	ct := packet[encLen:]
-
 	var msg []byte
 	if len(m.decryptedMsg) > 0 {
 		msg = m.decryptedMsg
 		m.decryptedMsg = nil
 	} else {
+		kem := suite.KEM
+		encLen := kem.EncLen()
+		var enc, ct []byte
+
+		if !m.initiator {
+			pubLen := kem.PublicKeyLen()
+			if len(packet) < pubLen+encLen+1 {
+				return nil, nil, ErrPacketTooShort
+			}
+			pkS := packet[:pubLen]
+			enc = packet[pubLen : pubLen+encLen]
+			ct = packet[pubLen+encLen:]
+			if len(m.peerHPKEPub) > 0 && !bytes.Equal(m.peerHPKEPub, pkS) {
+				m.failed = true
+				return nil, nil, fmt.Errorf("handshake sender HPKE key changed")
+			}
+			m.peerHPKEPub = append(m.peerHPKEPub[:0], pkS...)
+		} else {
+			if len(packet) < encLen+1 {
+				return nil, nil, ErrPacketTooShort
+			}
+			enc = packet[:encLen]
+			ct = packet[encLen:]
+		}
+
 		var ctx *hpke.Context
 		var err error
 
 		if !m.initiator {
-			info := hpkeInfo("nebula-hpke-msg1", nil, cred.HPKEPub)
-			ctx, err = hpke.SetupBaseR(enc, cred.hpkePriv, info, suite)
+			info := hpkeInfo("nebula-hpke-msg1", m.peerHPKEPub, cred.HPKEPub)
+			ctx, err = hpke.SetupAuthR(enc, cred.hpkePriv, m.peerHPKEPub, info, suite)
 			if err != nil {
-				return nil, nil, fmt.Errorf("hpke base: %w", err)
+				return nil, nil, fmt.Errorf("hpke auth: %w", err)
 			}
 			m.ss1 = ctx.SharedSecret()
 		} else {
@@ -408,7 +428,11 @@ func (m *Machine) processPayload(msg []byte, flags msgFlags) error {
 	}
 
 	if len(payload.HPKEPublicKey) > 0 {
-		m.peerHPKEPub = append([]byte(nil), payload.HPKEPublicKey...)
+		if len(m.peerHPKEPub) > 0 && !bytes.Equal(m.peerHPKEPub, payload.HPKEPublicKey) {
+			m.failed = true
+			return fmt.Errorf("payload HPKE key does not match sender HPKE key")
+		}
+		m.peerHPKEPub = append(m.peerHPKEPub[:0], payload.HPKEPublicKey...)
 	}
 
 	if flags.expectsCert {
@@ -435,14 +459,25 @@ func (m *Machine) validateCert(payload Payload) error {
 		return fmt.Errorf("recombine cert: %w", err)
 	}
 
-	// V3 certs carry the HPKE key inside. Lower versions use payload.HPKEPublicKey.
-	// Bind the payload's HPKE key to the validated certificate to prevent
+	// Bind all advertised HPKE keys to the validated certificate to prevent
 	// HPKE-key-swapping attacks.
 	certHPKEPub := payload.HPKEPublicKey
 	if hk, ok := rc.(cert.HPKEPublicKeyer); ok {
 		if k := hk.HPKEPublicKey(); len(k) > 0 {
 			certHPKEPub = k
 		}
+	}
+	if len(certHPKEPub) == 0 {
+		m.failed = true
+		return fmt.Errorf("certificate does not contain an HPKE public key")
+	}
+	if len(m.peerHPKEPub) > 0 && !bytes.Equal(certHPKEPub, m.peerHPKEPub) {
+		m.failed = true
+		return fmt.Errorf("sender HPKE key does not match certificate HPKE key")
+	}
+	if m.initiator && len(m.remoteHPKEPub) > 0 && !bytes.Equal(certHPKEPub, m.remoteHPKEPub) {
+		m.failed = true
+		return fmt.Errorf("remote HPKE key does not match certificate HPKE key")
 	}
 	if len(certHPKEPub) > 0 && len(payload.HPKEPublicKey) > 0 {
 		if !bytes.Equal(certHPKEPub, payload.HPKEPublicKey) {
@@ -513,9 +548,10 @@ func (m *Machine) initiateEncrypt(out []byte, remoteHPKEPub []byte, cred *Creden
 		return nil, fmt.Errorf("hpke suite not configured")
 	}
 
-	// msg1: Base KEM — sender is anonymous, info binds only the recipient pub.
-	info := hpkeInfo("nebula-hpke-msg1", nil, remoteHPKEPub)
-	ctx, enc, err := hpke.SetupBaseS(remoteHPKEPub, info, suite)
+	// msg1 carries the sender HPKE public key in clear so the responder can
+	// perform AuthDecap before decrypting the certificate payload.
+	info := hpkeInfo("nebula-hpke-msg1", cred.HPKEPub, remoteHPKEPub)
+	ctx, enc, err := hpke.SetupAuthS(remoteHPKEPub, cred.hpkePriv, info, suite)
 	if err != nil {
 		return nil, fmt.Errorf("hpke setup: %w", err)
 	}
@@ -532,6 +568,7 @@ func (m *Machine) initiateEncrypt(out []byte, remoteHPKEPub []byte, cred *Creden
 		return nil, fmt.Errorf("hpke seal: %w", err)
 	}
 
+	out = append(out, cred.HPKEPub...)
 	out = append(out, enc...)
 	out = append(out, ct...)
 

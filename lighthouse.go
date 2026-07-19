@@ -876,7 +876,7 @@ func (lh *LightHouse) innerQueryServer(addr netip.Addr, nb, out []byte) {
 			lh.ifce.SendMessageToVpnAddr(header.LightHouse, 0, lhVpnAddr, v1Query, nb, out)
 			queried++
 
-		} else if v == cert.Version2 {
+		} else if v == cert.Version2 || v == cert.Version3 {
 			if v2Query == nil {
 				msg.Details.OldVpnAddr = 0
 				msg.Details.VpnAddr = netAddrToProtoAddr(addr)
@@ -1029,7 +1029,7 @@ func (lh *LightHouse) SendUpdate() {
 			lh.ifce.SendMessageToVpnAddr(header.LightHouse, 0, lhVpnAddr, v1Update, nb, out)
 			updated++
 
-		} else if v == cert.Version2 {
+		} else if v == cert.Version2 || v == cert.Version3 {
 			if v2Update == nil {
 				var relays []*Addr
 				for _, r := range lh.GetRelaysForMe() {
@@ -1272,7 +1272,7 @@ func (lhh *LightHouseHandler) sendHostPunchNotification(n *NebulaMeta, fromVpnAd
 			}
 			b := whereToPunch.As4()
 			n.Details.OldVpnAddr = binary.BigEndian.Uint32(b[:])
-		} else if useVersion == cert.Version2 {
+		} else if useVersion == cert.Version2 || useVersion == cert.Version3 {
 			n.Details.VpnAddr = netAddrToProtoAddr(whereToPunch)
 		} else {
 			return 0, errors.New("unsupported version")
@@ -1327,7 +1327,7 @@ func (lhh *LightHouseHandler) coalesceAnswers(v cert.Version, c *cache, n *Nebul
 				b = r.As4()
 				n.Details.OldRelayVpnAddrs = append(n.Details.OldRelayVpnAddrs, binary.BigEndian.Uint32(b[:]))
 			}
-		} else if v == cert.Version2 {
+		} else if v == cert.Version2 || v == cert.Version3 {
 			for _, r := range c.relay.relay {
 				n.Details.RelayVpnAddrs = append(n.Details.RelayVpnAddrs, netAddrToProtoAddr(r))
 			}

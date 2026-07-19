@@ -153,21 +153,21 @@ func (hm *HandshakeManager) Run(ctx context.Context) {
 	}
 }
 
-// hpkeInfoMsg1 builds the HPKE info for msg1 (unauthenticated KEM encap).
-// Mirrors hpkeInfo("nebula-hpke-msg1", nil, recipientPub) in handshake/machine.go.
-// The sender is unknown at this point, so senderPub is omitted (zero-length).
-func hpkeInfoMsg1(recipientPub []byte) []byte {
+// hpkeInfoMsg1 builds the HPKE info for msg1.
+// Mirrors hpkeInfo("nebula-hpke-msg1", senderPub, recipientPub) in handshake/machine.go.
+func hpkeInfoMsg1(senderPub, recipientPub []byte) []byte {
 	const label = "nebula-hpke-msg1"
-	out := make([]byte, 0, len(label)+2+len(recipientPub))
+	out := make([]byte, 0, len(label)+2+len(senderPub)+len(recipientPub))
 	out = append(out, []byte(label)...)
 	out = append(out, 0x00)
+	out = append(out, senderPub...)
 	out = append(out, 0x00)
 	out = append(out, recipientPub...)
 	return out
 }
 
 // TrialDecap attempts to interpret a headerless packet as an HPKE handshake
-// msg1: [enc] + [ciphertext]. Returns true if decap succeeded and a handshake was initiated.
+// msg1: [sender_hpke_pub] + [enc] + [ciphertext]. Returns true if decap succeeded and a handshake was initiated.
 // Rate-limited to prevent CPU-based DoS from random packets.
 func (hm *HandshakeManager) TrialDecap(via ViaSender, packet []byte) bool {
 	if !hm.trialDecapLimiter.Allow() {
@@ -186,8 +186,9 @@ func (hm *HandshakeManager) TrialDecap(via ViaSender, packet []byte) bool {
 		return false
 	}
 
+	pubLen := suite.KEM.PublicKeyLen()
 	encLen := suite.KEM.EncLen()
-	if len(packet) < encLen+21 {
+	if len(packet) < pubLen+encLen+1 {
 		return false
 	}
 
@@ -197,11 +198,12 @@ func (hm *HandshakeManager) TrialDecap(via ViaSender, packet []byte) bool {
 		}
 	}
 
-	enc := packet[:encLen]
-	ct := packet[encLen:]
+	senderPub := packet[:pubLen]
+	enc := packet[pubLen : pubLen+encLen]
+	ct := packet[pubLen+encLen:]
 
-	info := hpkeInfoMsg1(cred.HPKEPub)
-	ctx, err := hpke.SetupBaseR(enc, cred.GetHPKEPriv(), info, suite)
+	info := hpkeInfoMsg1(senderPub, cred.HPKEPub)
+	ctx, err := hpke.SetupAuthR(enc, cred.GetHPKEPriv(), senderPub, info, suite)
 	if err != nil {
 		return false
 	}
@@ -210,7 +212,7 @@ func (hm *HandshakeManager) TrialDecap(via ViaSender, packet []byte) bool {
 		return false
 	}
 
-	hm.beginHandshake(via, packet, ctx.SharedSecret(), msg)
+	hm.beginHandshake(via, packet, ctx.SharedSecret(), msg, senderPub)
 	return true
 }
 
@@ -750,9 +752,9 @@ func (hm *HandshakeManager) buildStage0Packet(hh *HandshakeHostInfo) bool {
 }
 
 // beginHandshake handles an incoming headerless HPKE handshake msg1 packet.
-// packet is [enc] + [ciphertext]. ss1 and decryptedPayload are optional
+// packet is [sender_hpke_pub] + [enc] + [ciphertext]. ss1 and decryptedPayload are optional
 // pre-computed values from TrialDecap, avoiding double decryption.
-func (hm *HandshakeManager) beginHandshake(via ViaSender, packet []byte, ss1 []byte, decryptedPayload []byte) {
+func (hm *HandshakeManager) beginHandshake(via ViaSender, packet []byte, ss1 []byte, decryptedPayload []byte, senderPub []byte) {
 	f := hm.f
 	cs := f.pki.getCertState()
 
@@ -777,6 +779,7 @@ func (hm *HandshakeManager) beginHandshake(via ViaSender, packet []byte, ss1 []b
 	// If TrialDecap already decrypted the payload, inject it to skip double work
 	if len(decryptedPayload) > 0 {
 		machine.SetDecryptedPayload(decryptedPayload)
+		machine.SetPeerHPKEPub(senderPub)
 		if ss1 != nil {
 			machine.SetSS1(ss1)
 		}
