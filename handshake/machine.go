@@ -267,9 +267,9 @@ func (m *Machine) respond(out []byte) ([]byte, error) {
 	if len(pkR) == 0 {
 		peerCert := m.result.RemoteCert.Certificate
 		pkR = hpkePubKey(peerCert)
-		if pkR == nil {
-			pkR = peerCert.PublicKey()
-		}
+	}
+	if len(pkR) == 0 {
+		return nil, fmt.Errorf("no peer HPKE public key for auth response")
 	}
 
 	ctx, enc, err := hpke.SetupAuthS(pkR, cred.HPKEPriv, []byte("nebula-hpke-msg2"), suite)

@@ -92,7 +92,30 @@ func (f *Interface) processDataPacketV2(via ViaSender, hostinfo *HostInfo, packe
 		return
 	}
 
-	pt, err := ci.dKey.DecryptDanger(out, packet[:16], packet[16:], c, nb)
+	var pt []byte
+	var err error
+	overhead := ci.dKey.Overhead()
+
+	if msgSubtype == header.MessageRelay {
+		// Relay: AD = [relay_header(16)] + [inner_packet], ciphertext = [AEAD_tag]
+		if len(packet) < 16+overhead {
+			return
+		}
+		adLen := len(packet) - overhead
+		ad := packet[:adLen]
+		sigValue := packet[adLen:]
+		pt, err = ci.dKey.DecryptDanger(out, ad, sigValue, c, nb)
+		if err == nil {
+			// pt is nil (sender encrypted nil plaintext). The inner packet is ad[16:].
+			if len(ad) > 16 {
+				f.processRelayInner(via, hostinfo, ad[16:], nb, out, q, localCache)
+			}
+			return
+		}
+	} else {
+		// Standard data: AD = [encrypted_header(16)], ciphertext = rest
+		pt, err = ci.dKey.DecryptDanger(out, packet[:16], packet[16:], c, nb)
+	}
 	if err != nil {
 		if f.l.Enabled(context.Background(), slog.LevelDebug) {
 			hostinfo.logger(f.l).Debug("Failed to decrypt packet", "error", err, "from", via)
@@ -103,6 +126,10 @@ func (f *Interface) processDataPacketV2(via ViaSender, hostinfo *HostInfo, packe
 		return
 	}
 
+	if msgSubtype == header.MessageRelay {
+		return // handled above
+	}
+
 	f.handleHostRoaming(hostinfo, via)
 	f.connectionManager.In(hostinfo)
 
@@ -111,8 +138,6 @@ func (f *Interface) processDataPacketV2(via ViaSender, hostinfo *HostInfo, packe
 		switch msgSubtype {
 		case header.MessageNone:
 			f.handleOutsideMessagePacket(hostinfo, pt, packet, fwPacket, nb, q, localCache)
-		case header.MessageRelay:
-			f.handleOutsideRelayPacket(hostinfo, via, pt, decHdr, packet[:16], nb, out, q, localCache)
 		default:
 			hostinfo.logger(f.l).Error("unexpected message subtype", "from", via, "subtype", msgSubtype)
 		}
@@ -135,6 +160,43 @@ func (f *Interface) processDataPacketV2(via ViaSender, hostinfo *HostInfo, packe
 		if f.l.Enabled(context.Background(), slog.LevelDebug) {
 			hostinfo.logger(f.l).Debug("Unknown message type", "from", via, "type", msgType)
 		}
+	}
+}
+
+func (f *Interface) processRelayInner(via ViaSender, outerHI *HostInfo, innerPacket []byte, nb, out []byte, q int, localCache firewall.ConntrackCache) {
+	if len(innerPacket) < 16 {
+		return
+	}
+	var innerDecHdr [16]byte
+	if block := f.pki.HeaderBlock(); block != nil {
+		block.Decrypt(innerDecHdr[:], innerPacket[:16])
+	} else {
+		return
+	}
+	innerSessionID := binary.BigEndian.Uint32(innerDecHdr[0:4])
+	innerHI := f.hostMap.QueryIndex(innerSessionID)
+	if innerHI == nil || innerHI.ConnectionState == nil {
+		return
+	}
+
+	// Determine relay type and re-dispatch or forward
+	relay, ok := outerHI.relayState.QueryRelayForByIdx(binary.BigEndian.Uint32(innerDecHdr[0:4]))
+	if !ok {
+		return
+	}
+
+	switch relay.Type {
+	case TerminalType:
+		f.processDataPacketV2(via, innerHI, innerPacket, innerDecHdr, nb, out, nil, nil, q, localCache)
+	case ForwardingType:
+		targetRelay, ok2 := innerHI.relayState.QueryRelayForByIdx(innerSessionID)
+		if !ok2 || targetRelay.State != Established {
+			return
+		}
+		// Forward the inner packet as AD through the relay
+		f.SendVia(innerHI, targetRelay, innerPacket, nb, out, true)
+	default:
+		return
 	}
 }
 
