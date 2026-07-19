@@ -189,12 +189,7 @@ func (hm *HandshakeManager) TrialDecap(via ViaSender, packet []byte) bool {
 		return false
 	}
 
-	payload, pErr := handshake.UnmarshalPayload(msg)
-	if pErr != nil || len(payload.Cert) == 0 {
-		return false
-	}
-
-	hm.beginHandshake(via, packet)
+	hm.beginHandshake(via, packet, ctx.SharedSecret(), msg)
 	return true
 }
 
@@ -732,8 +727,9 @@ func (hm *HandshakeManager) buildStage0Packet(hh *HandshakeHostInfo) bool {
 }
 
 // beginHandshake handles an incoming headerless HPKE handshake msg1 packet.
-// packet is [enc] + [ciphertext].
-func (hm *HandshakeManager) beginHandshake(via ViaSender, packet []byte) {
+// packet is [enc] + [ciphertext]. ss1 and decryptedPayload are optional
+// pre-computed values from TrialDecap, avoiding double decryption.
+func (hm *HandshakeManager) beginHandshake(via ViaSender, packet []byte, ss1 []byte, decryptedPayload []byte) {
 	f := hm.f
 	cs := f.pki.getCertState()
 
@@ -753,6 +749,14 @@ func (hm *HandshakeManager) beginHandshake(via ViaSender, packet []byte) {
 	if err != nil {
 		f.l.Error("Failed to create handshake machine", "from", via, "error", err)
 		return
+	}
+
+	// If TrialDecap already decrypted the payload, inject it to skip double work
+	if len(decryptedPayload) > 0 {
+		machine.SetDecryptedPayload(decryptedPayload)
+		if ss1 != nil {
+			machine.SetSS1(ss1)
+		}
 	}
 
 	response, result, err := machine.ProcessPacket(nil, packet)

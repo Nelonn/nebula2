@@ -254,9 +254,9 @@ func keySchedule(mode byte, sharedSecret []byte, info []byte, suite *HPKESuite) 
 func computeSuiteID(suite *HPKESuite) []byte {
 	id := make([]byte, 10)
 	id[0] = 'H'; id[1] = 'P'; id[2] = 'K'; id[3] = 'E'
-	binary.BigEndian.PutUint16(id[4:6], suite.KDFID)
-	binary.BigEndian.PutUint16(id[6:8], suite.AEADID)
-	binary.BigEndian.PutUint16(id[8:10], suite.KEM.ID())
+	binary.BigEndian.PutUint16(id[4:6], suite.KEM.ID())
+	binary.BigEndian.PutUint16(id[6:8], suite.KDFID)
+	binary.BigEndian.PutUint16(id[8:10], suite.AEADID)
 	return id
 }
 

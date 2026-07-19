@@ -51,6 +51,7 @@ type Machine struct {
 	peerHPKEPub    []byte
 	ss1            []byte
 	ss2            []byte
+	decryptedMsg   []byte
 }
 
 func NewMachine(
@@ -92,6 +93,14 @@ func (m *Machine) LocalIndex() uint32 {
 		return m.result.LocalIndex
 	}
 	return 0
+}
+
+func (m *Machine) SetDecryptedPayload(buf []byte) {
+	m.decryptedMsg = append([]byte(nil), buf...)
+}
+
+func (m *Machine) SetSS1(ss []byte) {
+	m.ss1 = ss
 }
 
 func (m *Machine) requireComplete() error {
@@ -176,31 +185,37 @@ func (m *Machine) ProcessPacket(out, packet []byte) ([]byte, *Result, error) {
 	enc := packet[:encLen]
 	ct := packet[encLen:]
 
-	var ctx *hpke.Context
-	var err error
-
-	if !m.initiator {
-		ctx, err = hpke.SetupBaseR(enc, cred.HPKEPriv, []byte("nebula-hpke-msg1"), suite)
-		if err != nil {
-			return nil, nil, fmt.Errorf("hpke base: %w", err)
-		}
-		m.ss1 = ctx.SharedSecret()
+	var msg []byte
+	if len(m.decryptedMsg) > 0 {
+		msg = m.decryptedMsg
+		m.decryptedMsg = nil
 	} else {
-		pkS := m.remoteHPKEPub
-		if len(pkS) == 0 {
-			m.failed = true
-			return nil, nil, fmt.Errorf("no remote hpke key for auth decryption")
-		}
-		ctx, err = hpke.SetupAuthR(enc, cred.HPKEPriv, pkS, []byte("nebula-hpke-msg2"), suite)
-		if err != nil {
-			return nil, nil, fmt.Errorf("hpke auth: %w", err)
-		}
-		m.ss2 = ctx.SharedSecret()
-	}
+		var ctx *hpke.Context
+		var err error
 
-	msg, err := ctx.Open(nil, ct)
-	if err != nil {
-		return nil, nil, fmt.Errorf("hpke open: %w", err)
+		if !m.initiator {
+			ctx, err = hpke.SetupBaseR(enc, cred.HPKEPriv, []byte("nebula-hpke-msg1"), suite)
+			if err != nil {
+				return nil, nil, fmt.Errorf("hpke base: %w", err)
+			}
+			m.ss1 = ctx.SharedSecret()
+		} else {
+			pkS := m.remoteHPKEPub
+			if len(pkS) == 0 {
+				m.failed = true
+				return nil, nil, fmt.Errorf("no remote hpke key for auth decryption")
+			}
+			ctx, err = hpke.SetupAuthR(enc, cred.HPKEPriv, pkS, []byte("nebula-hpke-msg2"), suite)
+			if err != nil {
+				return nil, nil, fmt.Errorf("hpke auth: %w", err)
+			}
+			m.ss2 = ctx.SharedSecret()
+		}
+
+		msg, err = ctx.Open(nil, ct)
+		if err != nil {
+			return nil, nil, fmt.Errorf("hpke open: %w", err)
+		}
 	}
 
 	m.step++
@@ -297,7 +312,9 @@ func (m *Machine) completed() *Result {
 		return m.result
 	}
 
-	ks := append(m.ss1, m.ss2...)
+	ks := make([]byte, len(m.ss1)+len(m.ss2))
+	copy(ks, m.ss1)
+	copy(ks[len(m.ss1):], m.ss2)
 	masterKey := hkdfExpand(sha256.New, ks, "nebula-hpke-master", 32)
 
 	var ek [32]byte

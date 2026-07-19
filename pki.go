@@ -557,6 +557,12 @@ func newCertState(dv cert.Version, v1, v2 cert.Certificate, pkcs11backed bool, p
 			hpkePub = hk.HPKEPublicKey()
 		}
 
+		if len(hpkePriv) > 0 && len(hpkePub) > 0 {
+			if err := cert.VerifyHPKEPrivateKey(hpkePub, hpkePriv); err != nil {
+				return nil, fmt.Errorf("HPKE private key does not match HPKE public key in certificate: %w", err)
+			}
+		}
+
 		cs.v3Cert = v3
 		cs.v3Credential = handshake.NewCredential(v3, v3hs, hpkePriv, hpkePub, ncs, hSuite)
 		if cs.initiatingVersion == 0 {
