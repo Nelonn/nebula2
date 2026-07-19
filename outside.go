@@ -23,7 +23,9 @@ const (
 var ErrOutOfWindow = errors.New("out of window packet")
 
 func (f *Interface) readOutsidePackets(via ViaSender, out []byte, packet []byte, h *header.H, fwPacket *firewall.Packet, lhf *LightHouseHandler, nb []byte, q int, localCache firewall.ConntrackCache) {
-	// Try headerless HPKE handshake paths first.
+	// Prioritized dispatch: data path (fast), then legacy, then handshake (expensive).
+
+	// 1. Handshake msg2 continuation — O(1) index lookup
 	if len(packet) > 4 {
 		idx := binary.BigEndian.Uint32(packet[:4])
 		if hh := f.handshakeManager.QueryIndex(idx); hh != nil {
@@ -31,13 +33,8 @@ func (f *Interface) readOutsidePackets(via ViaSender, out []byte, packet []byte,
 			return
 		}
 	}
-	if len(packet) > 16 {
-		if f.handshakeManager.TrialDecap(via, packet) {
-			return
-		}
-	}
 
-	// One AES-ECB decrypt with Global PSK, then look up session_id inside.
+	// 2. Data packet — one AES-ECB decrypt, O(1) session lookup (fast path)
 	if len(packet) >= 16 {
 		var encHdr [16]byte
 		copy(encHdr[:], packet[:16])
@@ -50,7 +47,7 @@ func (f *Interface) readOutsidePackets(via ViaSender, out []byte, packet []byte,
 		}
 	}
 
-	// Fall through to header.Parse for lighthouse/recverror/test (plaintext header).
+	// 3. Legacy header.Parse for lighthouse/recverror (plaintext header)
 	err := h.Parse(packet)
 	if err != nil {
 		if len(packet) > 1 {
@@ -73,14 +70,19 @@ func (f *Interface) readOutsidePackets(via ViaSender, out []byte, packet []byte,
 		f.messageMetrics.Rx(h.Type, h.Subtype, 1)
 	}
 
+	// Note: no default return — let through to TrialDecap below.
 	switch h.Type {
 	case header.Handshake:
 		return
 	case header.RecvError:
 		f.handleRecvError(via.UdpAddr, h)
 		return
-	default:
-		return
+	}
+
+	// 4. TrialDecap — asymmetric crypto, last resort for handshake msg1.
+	//    Falls here only if packet matches nothing in steps 1-3.
+	if len(packet) > 16 {
+		f.handshakeManager.TrialDecap(via, packet)
 	}
 }
 

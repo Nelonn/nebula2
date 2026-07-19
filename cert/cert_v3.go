@@ -597,8 +597,8 @@ type HPKEPublicKeyer interface {
 }
 
 func VerifyHPKEPrivateKey(hpkePub, hpkePriv []byte) error {
-	switch len(hpkePub) {
-	case 32:
+	switch {
+	case len(hpkePub) == 32 && len(hpkePriv) == 32:
 		pub, err := curve25519.X25519(hpkePriv, curve25519.Basepoint)
 		if err != nil {
 			return ErrInvalidPrivateKey
@@ -607,9 +607,10 @@ func VerifyHPKEPrivateKey(hpkePub, hpkePriv []byte) error {
 			return ErrPublicPrivateKeyMismatch
 		}
 		return nil
-	default:
-		// For hybrid keys, we verify the X25519 component
-		if len(hpkePriv) < 32 {
+
+	case len(hpkePub) > 32 && len(hpkePriv) > 32:
+		// Hybrid: verify both X25519 and ML-KEM768 components
+		if len(hpkePriv) < 32+mlkem.SeedSize {
 			return ErrInvalidPrivateKey
 		}
 		pub, err := curve25519.X25519(hpkePriv[:32], curve25519.Basepoint)
@@ -619,7 +620,19 @@ func VerifyHPKEPrivateKey(hpkePub, hpkePriv []byte) error {
 		if !hmac.Equal(pub, hpkePub[:32]) {
 			return ErrPublicPrivateKeyMismatch
 		}
+		// Validate ML-KEM768 component: verify the seed produces the expected encapsulation key
+		mlkemPriv, err := mlkem.NewDecapsulationKey768(hpkePriv[32 : 32+mlkem.SeedSize])
+		if err != nil {
+			return ErrInvalidPrivateKey
+		}
+		expectedPub := mlkemPriv.EncapsulationKey().Bytes()
+		if !hmac.Equal(expectedPub, hpkePub[32:]) {
+			return ErrPublicPrivateKeyMismatch
+		}
 		return nil
+
+	default:
+		return ErrInvalidPrivateKey
 	}
 }
 

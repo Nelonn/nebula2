@@ -286,7 +286,7 @@ func signCert(args []string, out io.Writer, errOut io.Writer, pr PasswordReader)
 		if err != nil {
 			return fmt.Errorf("error while getting public key with PKCS#11: %w", err)
 		}
-	} else if !isV3 {
+	} else {
 		pub, rawPriv = newKeypair(curve)
 	}
 

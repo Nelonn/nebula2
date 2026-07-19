@@ -217,15 +217,35 @@ type Context struct {
 
 func (c *Context) SharedSecret() []byte { return c.sharedSecret }
 
+func hkdfExtract(salt, ikm []byte) []byte {
+	if salt == nil {
+		salt = make([]byte, Nh)
+	}
+	mac := hmac.New(sha256.New, salt)
+	mac.Write(ikm)
+	return mac.Sum(nil)
+}
+
 func keySchedule(mode byte, sharedSecret []byte, info []byte, suite *HPKESuite) *Context {
 	suiteID := computeSuiteID(suite)
 	psk := []byte{}
 	pskID := []byte{}
-	earlySecret := labeledExtract(nil, "psk_id_hash", psk, suiteID)
-	preKey := labeledExpand(earlySecret, "psk_id_hash", pskID, Nh, suiteID)
-	secret := labeledExtract(preKey, "shared_secret", sharedSecret, suiteID)
-	key := labeledExpand(secret, "key", info, Nk, suiteID)
-	nonceBytes := labeledExpand(secret, "base_nonce", info, Nn, suiteID)
+
+	earlySecret := hkdfExtract(nil, psk)
+
+	pskIDHash := labeledExpand(earlySecret, "psk_id_hash", pskID, Nh, suiteID)
+	infoHash := labeledExpand(earlySecret, "info_hash", info, Nh, suiteID)
+
+	keyScheduleCtx := make([]byte, 1+Nh+Nh)
+	keyScheduleCtx[0] = mode
+	copy(keyScheduleCtx[1:], pskIDHash)
+	copy(keyScheduleCtx[1+Nh:], infoHash)
+
+	secret := labeledExtract(pskIDHash, "secret", sharedSecret, suiteID)
+
+	key := labeledExpand(secret, "key", keyScheduleCtx, Nk, suiteID)
+	nonceBytes := labeledExpand(secret, "base_nonce", keyScheduleCtx, Nn, suiteID)
+
 	ctx := &Context{key: key, sharedSecret: sharedSecret}
 	copy(ctx.nonce[:], nonceBytes)
 	return ctx
