@@ -187,7 +187,7 @@ func (hm *HandshakeManager) TrialDecap(via ViaSender, packet []byte) bool {
 	enc := packet[:encLen]
 	ct := packet[encLen:]
 
-	ctx, err := hpke.SetupBaseR(enc, cred.HPKEPriv, []byte("nebula-hpke-msg1"), suite)
+	ctx, err := hpke.SetupBaseR(enc, cred.GetHPKEPriv(), []byte("nebula-hpke-msg1"), suite)
 	if err != nil {
 		return false
 	}

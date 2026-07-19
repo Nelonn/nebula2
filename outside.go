@@ -179,8 +179,7 @@ func (f *Interface) processRelayInner(via ViaSender, outerHI *HostInfo, innerPac
 		return
 	}
 
-	// Determine relay type and re-dispatch or forward
-	relay, ok := outerHI.relayState.QueryRelayForByIdx(binary.BigEndian.Uint32(innerDecHdr[0:4]))
+	relay, ok := outerHI.relayState.QueryRelayForByIdx(innerSessionID)
 	if !ok {
 		return
 	}
@@ -264,97 +263,6 @@ func (f *Interface) handleOutsideRelayPacket(hostinfo *HostInfo, via ViaSender, 
 	}
 }
 
-func (f *Interface) handleOutsideRelayPacketOld(hostinfo *HostInfo, via ViaSender, out []byte, packet []byte, h *header.H, fwPacket *firewall.Packet, lhf *LightHouseHandler, nb []byte, q int, localCache firewall.ConntrackCache) {
-	// The entire body is sent as AD, not encrypted.
-	// The packet consists of a 16-byte parsed Nebula header, Associated Data-protected payload, and a trailing 16-byte AEAD signature value.
-	// The packet is guaranteed to be at least 16 bytes at this point, b/c it got past the h.Parse() call above. If it's
-	// otherwise malformed (meaning, there is no trailing 16 byte AEAD value), then this will result in at worst a 0-length slice
-	// which will gracefully fail in the DecryptDanger call.
-	signedPayload := packet[:len(packet)-hostinfo.ConnectionState.dKey.Overhead()]
-	signatureValue := packet[len(packet)-hostinfo.ConnectionState.dKey.Overhead():]
-	var err error
-	out, err = hostinfo.ConnectionState.dKey.DecryptDanger(out, signedPayload, signatureValue, h.MessageCounter, nb)
-	if err != nil {
-		return
-	}
-	// Advance the replay window now that the frame is authenticated
-	if !hostinfo.ConnectionState.window.Update(f.l, h.MessageCounter) {
-		if f.l.Enabled(context.Background(), slog.LevelDebug) {
-			hostinfo.logger(f.l).Debug("dropping out of window relay packet", "header", h)
-		}
-		return
-	}
-	// Successfully validated the thing. Get rid of the Relay header.
-	signedPayload = signedPayload[header.Len:]
-	// Pull the Roaming parts up here, and return in all call paths.
-	f.handleHostRoaming(hostinfo, via)
-	// Track usage of both the HostInfo and the Relay for the received & authenticated packet
-	f.connectionManager.In(hostinfo)
-	f.connectionManager.RelayUsed(h.RemoteIndex)
-
-	relay, ok := hostinfo.relayState.QueryRelayForByIdx(h.RemoteIndex)
-	if !ok {
-		// The only way this happens is if hostmap has an index to the correct HostInfo, but the HostInfo is missing
-		// its internal mapping. This should never happen.
-		hostinfo.logger(f.l).Error("HostInfo missing remote relay index",
-			"relayRemoteIndex", h.RemoteIndex,
-		)
-		return
-	}
-
-	switch relay.Type {
-	case TerminalType:
-		// If I am the target of this relay, process the unwrapped packet
-		// From this recursive point, all these variables are 'burned'. We shouldn't rely on them again.
-		via = ViaSender{
-			UdpAddr:   via.UdpAddr,
-			relayHI:   hostinfo,
-			relay:     relay,
-			IsRelayed: true,
-		}
-		f.readOutsidePackets(via, out[:0], signedPayload, h, fwPacket, lhf, nb, q, localCache)
-	case ForwardingType:
-		// Find the target HostInfo relay object
-		targetHI, targetRelay, err := f.hostMap.QueryVpnAddrsRelayFor(hostinfo.vpnAddrs, relay.PeerAddr)
-		if err != nil {
-			hostinfo.logger(f.l).Info("Failed to find target host info by ip",
-				"relayTo", relay.PeerAddr,
-				"relayFrom", hostinfo.vpnAddrs[0],
-				"error", err,
-			)
-			return
-		}
-
-		// If that relay is Established, forward the payload through it
-		if targetRelay.State == Established {
-			switch targetRelay.Type {
-			case ForwardingType:
-				// Forward this packet through the relay tunnel
-				// Find the target HostInfo
-				f.SendVia(targetHI, targetRelay, signedPayload, nb, out, false)
-			case TerminalType:
-				hostinfo.logger(f.l).Error("Unexpected Relay Type of Terminal")
-				return
-			default:
-				if f.l.Enabled(context.Background(), slog.LevelDebug) {
-					hostinfo.logger(f.l).Debug("Unexpected targetRelay Type", "from", via, "relayType", targetRelay.Type)
-				}
-				return
-			}
-		} else {
-			hostinfo.logger(f.l).Info("Unexpected target relay state",
-				"relayTo", relay.PeerAddr,
-				"relayFrom", hostinfo.vpnAddrs[0],
-				"targetRelayState", targetRelay.State,
-			)
-			return
-		}
-	default:
-		if f.l.Enabled(context.Background(), slog.LevelDebug) {
-			hostinfo.logger(f.l).Debug("Unexpected relay type", "from", via, "relayType", relay.Type)
-		}
-	}
-}
 
 // closeTunnel closes a tunnel locally, it does not send a closeTunnel packet to the remote
 func (f *Interface) closeTunnel(hostInfo *HostInfo) {

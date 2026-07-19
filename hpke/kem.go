@@ -4,7 +4,6 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hkdf"
-	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
@@ -27,8 +26,6 @@ const (
 	Nk       = 32
 	Nn       = 12
 	X25519PK = 32
-
-	sharedSecretExportLabel = "nebula-hpke-shared"
 )
 
 type KEM interface {
@@ -152,26 +149,27 @@ type Context struct {
 
 func (c *Context) SharedSecret() []byte { return c.sharedSecret }
 
-func (c *Context) Seal(aad, pt []byte) ([]byte, error) {
-	return c.sealFn(aad, pt)
-}
+func (c *Context) Seal(aad, pt []byte) ([]byte, error) { return c.sealFn(aad, pt) }
+func (c *Context) Open(aad, ct []byte) ([]byte, error) { return c.openFn(aad, ct) }
 
-func (c *Context) Open(aad, ct []byte) ([]byte, error) {
-	return c.openFn(aad, ct)
-}
-
+// RFC 9180 §4: LabeledExtract(salt, label, ikm) =
+//
+//	labeled_ikm = concat("HPKE-v1", suite_id, label, ikm)
+//	return Extract(salt, labeled_ikm)
 func labeledExtract(salt []byte, label string, ikm []byte, suiteID []byte) []byte {
-	if salt == nil {
-		salt = make([]byte, Nh)
-	}
-	mac := hmac.New(sha256.New, salt)
-	mac.Write([]byte("HPKE-v1"))
-	mac.Write(suiteID)
-	mac.Write([]byte(label))
-	mac.Write(ikm)
-	return mac.Sum(nil)
+	labeledIKM := make([]byte, 0, len("HPKE-v1")+len(suiteID)+len(label)+len(ikm))
+	labeledIKM = append(labeledIKM, []byte("HPKE-v1")...)
+	labeledIKM = append(labeledIKM, suiteID...)
+	labeledIKM = append(labeledIKM, []byte(label)...)
+	labeledIKM = append(labeledIKM, ikm...)
+	out, _ := hkdf.Extract(sha256.New, labeledIKM, salt)
+	return out
 }
 
+// RFC 9180 §4: LabeledExpand(prk, label, info, L) =
+//
+//	labeled_info = concat(I2OSP(L, 2), "HPKE-v1", suite_id, label, info)
+//	return Expand(prk, labeled_info, L)
 func labeledExpand(prk []byte, label string, info []byte, length int, suiteID []byte) []byte {
 	labeledInfo := make([]byte, 0, 2+len("HPKE-v1")+len(suiteID)+len(label)+len(info))
 	labeledInfo = append(labeledInfo, byte(length>>8), byte(length&0xff))
@@ -186,21 +184,13 @@ func labeledExpand(prk []byte, label string, info []byte, length int, suiteID []
 	return out
 }
 
+// RFC 9180 §7.1: ExtractAndExpand(dh, kem_context, kem_id)
 func extractAndExpand(dh, kemCtx []byte, kemID uint16) []byte {
 	suiteID := make([]byte, 5)
 	suiteID[0] = 'K'; suiteID[1] = 'E'; suiteID[2] = 'M'
 	binary.BigEndian.PutUint16(suiteID[3:5], kemID)
-	prk := labeledExtract(nil, "shared_secret", dh, suiteID)
+	prk, _ := hkdf.Extract(sha256.New, dh, nil)
 	return labeledExpand(prk, "shared_secret", kemCtx, Nh, suiteID)
-}
-
-func hkdfExtract(salt, ikm []byte) []byte {
-	if salt == nil {
-		salt = make([]byte, Nh)
-	}
-	mac := hmac.New(sha256.New, salt)
-	mac.Write(ikm)
-	return mac.Sum(nil)
 }
 
 func computeSuiteID(suite *HPKESuite) []byte {
@@ -212,12 +202,13 @@ func computeSuiteID(suite *HPKESuite) []byte {
 	return id
 }
 
+// RFC 9180 §5.2: HPKE Key Schedule
 func keySchedule(mode byte, sharedSecret []byte, info []byte, suite *HPKESuite) *Context {
 	suiteID := computeSuiteID(suite)
-	psk := []byte{}
+	emptyPSK := []byte{}
 	pskID := []byte{}
 
-	earlySecret := hkdfExtract(nil, psk)
+	earlySecret, _ := hkdf.Extract(sha256.New, emptyPSK, nil)
 
 	pskIDHash := labeledExtract(earlySecret, "psk_id_hash", pskID, suiteID)
 	infoHash := labeledExtract(earlySecret, "info_hash", info, suiteID)
@@ -235,17 +226,16 @@ func keySchedule(mode byte, sharedSecret []byte, info []byte, suite *HPKESuite) 
 	block, _ := aes.NewCipher(key)
 	aead, _ := cipher.NewGCM(block)
 
-	seq := uint64(0)
 	var nonceBuf [Nn]byte
 	copy(nonceBuf[:], nonceBytes)
 
-	ctx := &Context{
-		sharedSecret: sharedSecret,
-	}
+	seq := uint64(0)
+
+	ctx := &Context{sharedSecret: sharedSecret}
 	ctx.sealFn = func(aad, pt []byte) ([]byte, error) {
 		ctx.mu.Lock()
 		defer ctx.mu.Unlock()
-		if seq > (1<<64)-2 {
+		if seq > 1<<63 {
 			return nil, fmt.Errorf("hpke: seq overflow")
 		}
 		var n [Nn]byte
@@ -259,7 +249,7 @@ func keySchedule(mode byte, sharedSecret []byte, info []byte, suite *HPKESuite) 
 	ctx.openFn = func(aad, ct []byte) ([]byte, error) {
 		ctx.mu.Lock()
 		defer ctx.mu.Unlock()
-		if seq > (1<<64)-2 {
+		if seq > 1<<63 {
 			return nil, fmt.Errorf("hpke: seq overflow")
 		}
 		var n [Nn]byte
@@ -270,7 +260,6 @@ func keySchedule(mode byte, sharedSecret []byte, info []byte, suite *HPKESuite) 
 		seq++
 		return aead.Open(nil, n[:], ct, aad)
 	}
-
 	return ctx
 }
 
@@ -279,8 +268,7 @@ func SetupBaseS(pkR []byte, info []byte, suite *HPKESuite) (*Context, []byte, er
 	if err != nil {
 		return nil, nil, err
 	}
-	ctx := keySchedule(0, ss, info, suite)
-	return ctx, enc, nil
+	return keySchedule(0, ss, info, suite), enc, nil
 }
 
 func SetupBaseR(enc, skR []byte, info []byte, suite *HPKESuite) (*Context, error) {
@@ -288,8 +276,7 @@ func SetupBaseR(enc, skR []byte, info []byte, suite *HPKESuite) (*Context, error
 	if err != nil {
 		return nil, err
 	}
-	ctx := keySchedule(0, ss, info, suite)
-	return ctx, nil
+	return keySchedule(0, ss, info, suite), nil
 }
 
 func SetupAuthS(pkR []byte, skS []byte, info []byte, suite *HPKESuite) (*Context, []byte, error) {
@@ -297,8 +284,7 @@ func SetupAuthS(pkR []byte, skS []byte, info []byte, suite *HPKESuite) (*Context
 	if err != nil {
 		return nil, nil, err
 	}
-	ctx := keySchedule(2, ss, info, suite)
-	return ctx, enc, nil
+	return keySchedule(2, ss, info, suite), enc, nil
 }
 
 func SetupAuthR(enc, skR, pkS []byte, info []byte, suite *HPKESuite) (*Context, error) {
@@ -306,6 +292,5 @@ func SetupAuthR(enc, skR, pkS []byte, info []byte, suite *HPKESuite) (*Context, 
 	if err != nil {
 		return nil, err
 	}
-	ctx := keySchedule(2, ss, info, suite)
-	return ctx, nil
+	return keySchedule(2, ss, info, suite), nil
 }

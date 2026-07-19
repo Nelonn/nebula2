@@ -195,7 +195,7 @@ func (m *Machine) ProcessPacket(out, packet []byte) ([]byte, *Result, error) {
 		var err error
 
 		if !m.initiator {
-			ctx, err = hpke.SetupBaseR(enc, cred.HPKEPriv, []byte("nebula-hpke-msg1"), suite)
+			ctx, err = hpke.SetupBaseR(enc, cred.hpkePriv, []byte("nebula-hpke-msg1"), suite)
 			if err != nil {
 				return nil, nil, fmt.Errorf("hpke base: %w", err)
 			}
@@ -206,7 +206,7 @@ func (m *Machine) ProcessPacket(out, packet []byte) ([]byte, *Result, error) {
 				m.failed = true
 				return nil, nil, fmt.Errorf("no remote hpke key for auth decryption")
 			}
-			ctx, err = hpke.SetupAuthR(enc, cred.HPKEPriv, pkS, []byte("nebula-hpke-msg2"), suite)
+			ctx, err = hpke.SetupAuthR(enc, cred.hpkePriv, pkS, []byte("nebula-hpke-msg2"), suite)
 			if err != nil {
 				return nil, nil, fmt.Errorf("hpke auth: %w", err)
 			}
@@ -271,7 +271,7 @@ func (m *Machine) respond(out []byte) ([]byte, error) {
 		return nil, fmt.Errorf("no peer HPKE public key for auth response")
 	}
 
-	ctx, enc, err := hpke.SetupAuthS(pkR, cred.HPKEPriv, []byte("nebula-hpke-msg2"), suite)
+	ctx, enc, err := hpke.SetupAuthS(pkR, cred.hpkePriv, []byte("nebula-hpke-msg2"), suite)
 	if err != nil {
 		return nil, fmt.Errorf("hpke auth setup: %w", err)
 	}

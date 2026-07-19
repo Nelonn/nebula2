@@ -7,13 +7,15 @@ import (
 )
 
 type Credential struct {
-	Cert       cert.Certificate
-	Bytes      []byte
-	HPKEPriv   []byte
-	HPKEPub    []byte
+	Cert        cert.Certificate
+	Bytes       []byte
+	hpkePriv    []byte
+	HPKEPub     []byte
 	CipherSuite noise.CipherSuite
-	HPKESuite  *hpke.HPKESuite
+	HPKESuite   *hpke.HPKESuite
 }
+
+func (c *Credential) GetHPKEPriv() []byte { return c.hpkePriv }
 
 func NewCredential(
 	c cert.Certificate,
@@ -26,7 +28,7 @@ func NewCredential(
 	return &Credential{
 		Cert:        c,
 		Bytes:       hsBytes,
-		HPKEPriv:    hpkePriv,
+		hpkePriv:    hpkePriv,
 		HPKEPub:     hpkePub,
 		CipherSuite: cipherSuite,
 		HPKESuite:   hpkeSuite,
