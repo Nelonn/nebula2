@@ -33,10 +33,20 @@ type PKI struct {
 	caPool    atomic.Pointer[cert.CAPool]
 	l         *slog.Logger
 	headerKey [16]byte
-	headerBlock cipher.Block
+	headerBlock atomic.Pointer[headerBlockWrapper]
 }
 
-func (p *PKI) HeaderBlock() cipher.Block { return p.headerBlock }
+type headerBlockWrapper struct {
+	block cipher.Block
+}
+
+func (p *PKI) HeaderBlock() cipher.Block {
+	w := p.headerBlock.Load()
+	if w == nil {
+		return nil
+	}
+	return w.block
+}
 
 type CertState struct {
 	v1Cert       cert.Certificate
@@ -96,7 +106,8 @@ func (p *PKI) computeHeaderKey() {
 		}
 	}
 	copy(p.headerKey[:], h.Sum(nil)[:16])
-	p.headerBlock, _ = aes.NewCipher(p.headerKey[:])
+	block, _ := aes.NewCipher(p.headerKey[:])
+	p.headerBlock.Store(&headerBlockWrapper{block: block})
 }
 
 func (p *PKI) GetCAPool() *cert.CAPool {

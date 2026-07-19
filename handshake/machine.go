@@ -299,22 +299,28 @@ func (m *Machine) completed() *Result {
 
 	ks := append(m.ss1, m.ss2...)
 	masterKey := hkdfExpand(sha256.New, ks, "nebula-hpke-master", 32)
-	eKey := hkdfExpand(sha256.New, masterKey, "initiator-to-responder", 32)
-	dKey := hkdfExpand(sha256.New, masterKey, "responder-to-initiator", 32)
 
 	var ek [32]byte
 	var dk [32]byte
-	copy(ek[:], eKey)
-	copy(dk[:], dKey)
+
+	if m.initiator {
+		// Initiator: EKey = "initiator-to-responder" (encrypt), DKey = "responder-to-initiator" (decrypt)
+		e := hkdfExpand(sha256.New, masterKey, "initiator-to-responder", 32)
+		d := hkdfExpand(sha256.New, masterKey, "responder-to-initiator", 32)
+		copy(ek[:], e)
+		copy(dk[:], d)
+	} else {
+		// Responder: EKey = "responder-to-initiator" (encrypt), DKey = "initiator-to-responder" (decrypt)
+		e := hkdfExpand(sha256.New, masterKey, "responder-to-initiator", 32)
+		d := hkdfExpand(sha256.New, masterKey, "initiator-to-responder", 32)
+		copy(ek[:], e)
+		copy(dk[:], d)
+	}
 
 	cs := cred.CipherSuite
 	m.result.EKey = noise.UnsafeNewCipherState(cs, ek, 0)
 	m.result.DKey = noise.UnsafeNewCipherState(cs, dk, 0)
 	m.result.MessageIndex = uint64(m.step)
-
-	if m.initiator {
-		m.result.EKey, m.result.DKey = m.result.DKey, m.result.EKey
-	}
 
 	return m.result
 }

@@ -23,18 +23,10 @@ const (
 var ErrOutOfWindow = errors.New("out of window packet")
 
 func (f *Interface) readOutsidePackets(via ViaSender, out []byte, packet []byte, h *header.H, fwPacket *firewall.Packet, lhf *LightHouseHandler, nb []byte, q int, localCache firewall.ConntrackCache) {
-	// Prioritized dispatch: data path (fast), then legacy, then handshake (expensive).
+	// Prioritized dispatch: data first (fast path), then legacy, then handshake.
 
-	// 1. Handshake msg2 continuation — O(1) index lookup
-	if len(packet) > 4 {
-		idx := binary.BigEndian.Uint32(packet[:4])
-		if hh := f.handshakeManager.QueryIndex(idx); hh != nil {
-			f.handshakeManager.HandleIncoming(via, packet[4:], idx)
-			return
-		}
-	}
-
-	// 2. Data packet — one AES-ECB decrypt, O(1) session lookup (fast path)
+	// 1. Data packet — one AES-ECB decrypt, O(1) session lookup (fast path)
+	//    Run BEFORE handshake continuation to avoid false collision (1/2^32).
 	if len(packet) >= 16 {
 		var encHdr [16]byte
 		copy(encHdr[:], packet[:16])
@@ -47,40 +39,37 @@ func (f *Interface) readOutsidePackets(via ViaSender, out []byte, packet []byte,
 		}
 	}
 
-	// 3. Legacy header.Parse for lighthouse/recverror (plaintext header)
-	err := h.Parse(packet)
-	if err != nil {
-		if len(packet) > 1 {
-			f.messageMetrics.RxInvalid(1)
+	// 2. Handshake msg2 continuation — O(1) index lookup
+	if len(packet) > 4 {
+		idx := binary.BigEndian.Uint32(packet[:4])
+		if hh := f.handshakeManager.QueryIndex(idx); hh != nil {
+			f.handshakeManager.HandleIncoming(via, packet[4:], idx)
+			return
 		}
-		return
 	}
 
-	if h.Version != header.Version || !h.IsValidSubType() {
-		f.messageMetrics.RxInvalid(1)
-		return
-	}
-
-	if !via.IsRelayed && f.myVpnNetworksTable.Contains(via.UdpAddr.Addr()) {
-		f.messageMetrics.RxInvalid(1)
-		return
-	}
-
-	if h.Type != header.Message {
-		f.messageMetrics.Rx(h.Type, h.Subtype, 1)
-	}
-
-	// Note: no default return — let through to TrialDecap below.
-	switch h.Type {
-	case header.Handshake:
-		return
-	case header.RecvError:
-		f.handleRecvError(via.UdpAddr, h)
-		return
+	// 3. Try legacy header.Parse — lighthouse/recverror have plaintext headers.
+	//    If parse fails, it's not a legacy packet — fall through to TrialDecap.
+	parseErr := h.Parse(packet)
+	if parseErr == nil {
+		if h.Version == header.Version && h.IsValidSubType() {
+			if via.IsRelayed || !f.myVpnNetworksTable.Contains(via.UdpAddr.Addr()) {
+				if h.Type != header.Message {
+					f.messageMetrics.Rx(h.Type, h.Subtype, 1)
+				}
+				switch h.Type {
+				case header.RecvError:
+					f.handleRecvError(via.UdpAddr, h)
+					return
+				case header.LightHouse:
+					lhf.HandleRequest(via.UdpAddr, nil, packet, f)
+					return
+				}
+			}
+		}
 	}
 
 	// 4. TrialDecap — asymmetric crypto, last resort for handshake msg1.
-	//    Falls here only if packet matches nothing in steps 1-3.
 	if len(packet) > 16 {
 		f.handshakeManager.TrialDecap(via, packet)
 	}
