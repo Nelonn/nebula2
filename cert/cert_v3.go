@@ -596,6 +596,8 @@ type HPKEPublicKeyer interface {
 	HPKEPublicKey() []byte
 }
 
+const hybridPubKeyLen = 32 + mlkem.EncapsulationKeySize768
+
 func VerifyHPKEPrivateKey(hpkePub, hpkePriv []byte) error {
 	switch {
 	case len(hpkePub) == 32 && len(hpkePriv) == 32:
@@ -608,7 +610,7 @@ func VerifyHPKEPrivateKey(hpkePub, hpkePriv []byte) error {
 		}
 		return nil
 
-	case len(hpkePub) > 32 && len(hpkePriv) == 32+mlkem.SeedSize:
+	case len(hpkePub) == hybridPubKeyLen && len(hpkePriv) == 32+mlkem.SeedSize:
 		// Hybrid: private key is [x25519_priv(32)] + [mlkem_seed(SeedSize)]
 		pub, err := curve25519.X25519(hpkePriv[:32], curve25519.Basepoint)
 		if err != nil {

@@ -26,6 +26,11 @@ import (
 var ErrHostNotKnown = errors.New("host not known")
 var ErrBadDetailsVpnAddr = errors.New("invalid packet, malformed detailsVpnAddr")
 
+type peerCertEntry struct {
+	bytes    []byte
+	addedAt  time.Time
+}
+
 type LightHouse struct {
 	//TODO: We need a timer wheel to kick out vpnAddrs that haven't reported in a long time
 	sync.RWMutex //Because we concurrently read and write to our maps
@@ -40,8 +45,8 @@ type LightHouse struct {
 	// map of vpn addr to answers
 	addrMap map[netip.Addr]*RemoteList
 
-	// Peer certificate cache: vpnAddr -> MarshalForHandshakes bytes
-	peerCerts map[netip.Addr][]byte
+	// Peer certificate cache: vpnAddr -> cert bytes (with TTL)
+	peerCerts map[netip.Addr]*peerCertEntry
 
 	// filters remote addresses allowed for each host
 	// - When we are a lighthouse, this filters what addresses we store and
@@ -104,7 +109,7 @@ func NewLightHouseFromConfig(ctx context.Context, l *slog.Logger, c *config.C, c
 		myVpnNetworks:      cs.myVpnNetworks,
 		myVpnNetworksTable: cs.myVpnNetworksTable,
 		addrMap:            make(map[netip.Addr]*RemoteList),
-		peerCerts:          make(map[netip.Addr][]byte),
+		peerCerts:          make(map[netip.Addr]*peerCertEntry),
 		nebulaPort:         nebulaPort,
 		punchy:             p,
 		updateTrigger:      make(chan struct{}, 1),
@@ -485,16 +490,32 @@ func (lh *LightHouse) loadStaticMap(c *config.C, staticList map[netip.Addr]struc
 	return nil
 }
 
+const peerCertTTL = 10 * time.Minute
+
 func (lh *LightHouse) GetPeerCert(vpnAddr netip.Addr) ([]byte, bool) {
 	lh.RLock()
-	certBytes, ok := lh.peerCerts[vpnAddr]
+	entry, ok := lh.peerCerts[vpnAddr]
 	lh.RUnlock()
-	return certBytes, ok
+	if !ok || time.Since(entry.addedAt) > peerCertTTL {
+		if ok {
+			lh.Lock()
+			delete(lh.peerCerts, vpnAddr)
+			lh.Unlock()
+		}
+		return nil, false
+	}
+	return entry.bytes, true
 }
 
 func (lh *LightHouse) DeletePeerCert(vpnAddr netip.Addr) {
 	lh.Lock()
 	delete(lh.peerCerts, vpnAddr)
+	lh.Unlock()
+}
+
+func (lh *LightHouse) setPeerCert(vpnAddr netip.Addr, certBytes []byte) {
+	lh.Lock()
+	lh.peerCerts[vpnAddr] = &peerCertEntry{bytes: certBytes, addedAt: time.Now()}
 	lh.Unlock()
 }
 
@@ -1190,11 +1211,9 @@ func (lhh *LightHouseHandler) handleHostQuery(n *NebulaMeta, fromVpnAddrs []neti
 		lhh.coalesceAnswers(useVersion, c, n)
 
 		// Include the peer's certificate in the reply for HPKE handshake
-		lhh.lh.RLock()
-		if certBytes, ok := lhh.lh.peerCerts[queryVpnAddr]; ok && len(certBytes) > 0 {
+		if certBytes, ok := lhh.lh.GetPeerCert(queryVpnAddr); ok && len(certBytes) > 0 {
 			n.Details.Certificate = certBytes
 		}
-		lhh.lh.RUnlock()
 
 		return n.MarshalTo(lhh.pb)
 	})
@@ -1348,7 +1367,7 @@ func (lhh *LightHouseHandler) handleHostQueryReply(n *NebulaMeta, fromVpnAddrs [
 
 	if len(n.Details.Certificate) > 0 {
 		lhh.lh.Lock()
-		lhh.lh.peerCerts[certVpnAddr] = n.Details.Certificate
+		lhh.lh.setPeerCert(certVpnAddr, n.Details.Certificate)
 		lhh.lh.Unlock()
 	}
 
@@ -1408,12 +1427,12 @@ func (lhh *LightHouseHandler) handleHostUpdateNotification(n *NebulaMeta, fromVp
 	// Store peer certificate if available via the update
 	if len(n.Details.Certificate) > 0 {
 		lhh.lh.Lock()
-		lhh.lh.peerCerts[fromVpnAddrs[0]] = n.Details.Certificate
+		lhh.lh.setPeerCert(fromVpnAddrs[0], n.Details.Certificate)
 		lhh.lh.Unlock()
 	} else if hi := w.GetHostInfo(fromVpnAddrs[0]); hi != nil && hi.ConnectionState != nil && hi.ConnectionState.peerCert != nil {
 		if certBytes, cerr := hi.ConnectionState.peerCert.Certificate.MarshalForHandshakes(); cerr == nil {
 			lhh.lh.Lock()
-			lhh.lh.peerCerts[fromVpnAddrs[0]] = certBytes
+			lhh.lh.setPeerCert(fromVpnAddrs[0], certBytes)
 			lhh.lh.Unlock()
 		}
 	}

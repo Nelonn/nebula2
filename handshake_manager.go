@@ -168,16 +168,7 @@ func (hm *HandshakeManager) TrialDecap(via ViaSender, packet []byte) bool {
 	}
 
 	encLen := suite.KEM.EncLen()
-
-	// Pre-filter: correct length, random-looking first bytes (no plaintext header)
 	if len(packet) < encLen+21 {
-		return false
-	}
-	// The first byte of a valid nebula header (if this were a legacy packet)
-	// would be 0x10 (Ver=1, Type=0=Handshake) through 0x1f.
-	// A valid HPKE handshake msg1 starts with random bytes — reject anything
-	// that looks like a legacy header.
-	if packet[0]>>4 == 1 && packet[0]&0x0f <= 6 {
 		return false
 	}
 
