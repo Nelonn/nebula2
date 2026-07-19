@@ -184,14 +184,7 @@ func labeledExpand(prk []byte, label string, info []byte, length int, suiteID []
 	return out
 }
 
-// RFC 9180 §7.1: ExtractAndExpand(dh, kem_context, kem_id)
-func extractAndExpand(dh, kemCtx []byte, kemID uint16) []byte {
-	suiteID := make([]byte, 5)
-	suiteID[0] = 'K'; suiteID[1] = 'E'; suiteID[2] = 'M'
-	binary.BigEndian.PutUint16(suiteID[3:5], kemID)
-	prk, _ := hkdf.Extract(sha256.New, dh, nil)
-	return labeledExpand(prk, "shared_secret", kemCtx, Nh, suiteID)
-}
+
 
 func computeSuiteID(suite *HPKESuite) []byte {
 	id := make([]byte, 10)
@@ -208,17 +201,15 @@ func keySchedule(mode byte, sharedSecret []byte, info []byte, suite *HPKESuite) 
 	emptyPSK := []byte{}
 	pskID := []byte{}
 
-	earlySecret, _ := hkdf.Extract(sha256.New, emptyPSK, nil)
-
-	pskIDHash := labeledExtract(earlySecret, "psk_id_hash", pskID, suiteID)
-	infoHash := labeledExtract(earlySecret, "info_hash", info, suiteID)
+	pskIDHash := labeledExtract(nil, "psk_id_hash", pskID, suiteID)
+	infoHash := labeledExtract(nil, "info_hash", info, suiteID)
 
 	keyScheduleCtx := make([]byte, 1+Nh+Nh)
 	keyScheduleCtx[0] = mode
 	copy(keyScheduleCtx[1:], pskIDHash)
 	copy(keyScheduleCtx[1+Nh:], infoHash)
 
-	secret := labeledExtract(earlySecret, "secret", sharedSecret, suiteID)
+	secret := labeledExtract(emptyPSK, "secret", sharedSecret, suiteID)
 
 	key := labeledExpand(secret, "key", keyScheduleCtx, Nk, suiteID)
 	nonceBytes := labeledExpand(secret, "base_nonce", keyScheduleCtx, Nn, suiteID)
@@ -229,35 +220,36 @@ func keySchedule(mode byte, sharedSecret []byte, info []byte, suite *HPKESuite) 
 	var nonceBuf [Nn]byte
 	copy(nonceBuf[:], nonceBytes)
 
-	seq := uint64(0)
+	sealSeq := uint64(0)
+	openSeq := uint64(0)
 
 	ctx := &Context{sharedSecret: sharedSecret}
 	ctx.sealFn = func(aad, pt []byte) ([]byte, error) {
 		ctx.mu.Lock()
 		defer ctx.mu.Unlock()
-		if seq > 1<<63 {
+		if sealSeq > 1<<63 {
 			return nil, fmt.Errorf("hpke: seq overflow")
 		}
 		var n [Nn]byte
-		binary.BigEndian.PutUint64(n[Nn-8:], seq)
+		binary.BigEndian.PutUint64(n[Nn-8:], sealSeq)
 		for i := 0; i < Nn; i++ {
 			n[i] ^= nonceBuf[i]
 		}
-		seq++
+		sealSeq++
 		return aead.Seal(nil, n[:], pt, aad), nil
 	}
 	ctx.openFn = func(aad, ct []byte) ([]byte, error) {
 		ctx.mu.Lock()
 		defer ctx.mu.Unlock()
-		if seq > 1<<63 {
+		if openSeq > 1<<63 {
 			return nil, fmt.Errorf("hpke: seq overflow")
 		}
 		var n [Nn]byte
-		binary.BigEndian.PutUint64(n[Nn-8:], seq)
+		binary.BigEndian.PutUint64(n[Nn-8:], openSeq)
 		for i := 0; i < Nn; i++ {
 			n[i] ^= nonceBuf[i]
 		}
-		seq++
+		openSeq++
 		return aead.Open(nil, n[:], ct, aad)
 	}
 	return ctx

@@ -263,9 +263,8 @@ func (m *Machine) respond(out []byte) ([]byte, error) {
 	}
 
 	pkR := m.peerHPKEPub
-	if len(pkR) == 0 {
-		peerCert := m.result.RemoteCert.Certificate
-		pkR = hpkePubKey(peerCert)
+	if len(pkR) == 0 && m.result.RemoteCert != nil {
+		pkR = hpkePubKey(m.result.RemoteCert.Certificate)
 	}
 	if len(pkR) == 0 {
 		return nil, fmt.Errorf("no peer HPKE public key for auth response")
@@ -319,7 +318,7 @@ func (m *Machine) completed() *Result {
 	copy(ks[len(m.ss1):], m.ss2)
 	prk, err := hkdf.Extract(sha256.New, ks, nil)
 	if err != nil {
-		return m.result
+		panic(fmt.Sprintf("hkdf.Extract: %v", err))
 	}
 
 	// HKDF-Expand: PRK → master key
@@ -353,7 +352,7 @@ func (m *Machine) completed() *Result {
 func hkdfExpand(h func() hash.Hash, secret []byte, label string, length int) []byte {
 	key, err := hkdf.Expand(h, secret, label, length)
 	if err != nil {
-		return make([]byte, length)
+		panic(fmt.Sprintf("hkdf.Expand: %v", err))
 	}
 	return key
 }

@@ -331,7 +331,7 @@ func newHPKESuite(hybrid bool) *hpke.HPKESuite {
 	}
 }
 
-func (cs *CertState) GetHPKEHybrid() bool  { return cs.hpkeHybrid }
+func (cs *CertState) GetHPKEHybrid() bool { return cs.hpkeHybrid }
 
 func (cs *CertState) String() string {
 	b, err := cs.MarshalJSON()
@@ -584,11 +584,7 @@ func newCertState(dv cert.Version, v1, v2 cert.Certificate, pkcs11backed bool, p
 
 		cs.v3Cert = v3
 		cs.v3Credential = handshake.NewCredential(v3, v3hs, hpkePriv, hpkePub, ncs, hSuite)
-		if cs.initiatingVersion == 0 {
-			cs.initiatingVersion = cert.Version3
-		} else {
-			cs.initiatingVersion = dv
-		}
+		cs.initiatingVersion = dv
 	}
 
 	var crt cert.Certificate
