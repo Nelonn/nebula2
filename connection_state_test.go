@@ -22,7 +22,7 @@ func runTestHandshake(t *testing.T) (initR, respR *handshake.Result) {
 	t.Helper()
 
 	ca, _, caKey, _ := ct.NewTestCaCert(
-		cert.Version2, cert.Curve_CURVE25519, time.Time{}, time.Time{}, nil, nil, nil,
+		cert.Version3, cert.Curve_CURVE25519, time.Time{}, time.Time{}, nil, nil, nil,
 	)
 	caPool := ct.NewTestCAPool(ca)
 
@@ -33,22 +33,30 @@ func runTestHandshake(t *testing.T) (initR, respR *handshake.Result) {
 	}
 
 	makePeer := func(name string, networks []netip.Prefix) *testPeer {
-		c, _, rawKey, _ := ct.NewTestCert(
-			cert.Version2, cert.Curve_CURVE25519, ca, caKey,
-			name, ca.NotBefore(), ca.NotAfter(), networks, nil, nil,
-		)
-		_, _, _, err := cert.UnmarshalPrivateKeyFromPEM(rawKey)
-		require.NoError(t, err)
-		hsBytes, err := c.MarshalForHandshakes()
-		require.NoError(t, err)
-		ncs := noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashSHA256)
 		hSuite := hpke.DefaultHPKE
 		hpkePub, hpkePriv, err := hSuite.KEM.GenerateKeyPair()
 		require.NoError(t, err)
+
+		c, err := (&cert.TBSCertificate{
+			Version:       cert.Version3,
+			Curve:         cert.Curve_CURVE25519,
+			Name:          name,
+			Networks:      networks,
+			NotBefore:     ca.NotBefore(),
+			NotAfter:      ca.NotAfter(),
+			PublicKey:     hpkePub,
+			HPKEPublicKey: hpkePub,
+			IsCA:          false,
+		}).Sign(ca, ca.Curve(), caKey)
+		require.NoError(t, err)
+
+		hsBytes, err := c.MarshalForHandshakes()
+		require.NoError(t, err)
+		ncs := noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashSHA256)
 		cred := handshake.NewCredential(c, hsBytes, hpkePriv, hpkePub, ncs, hSuite)
 		return &testPeer{
 			creds: func(v cert.Version) *handshake.Credential {
-				if v == cert.Version2 {
+				if v == cert.Version3 {
 					return cred
 				}
 				return nil
@@ -66,14 +74,14 @@ func runTestHandshake(t *testing.T) (initR, respR *handshake.Result) {
 	respPeer := makePeer("responder", []netip.Prefix{netip.MustParsePrefix("10.0.0.2/24")})
 
 	initM, err := handshake.NewMachine(
-		cert.Version2, initPeer.creds, verifier,
+		cert.Version3, initPeer.creds, verifier,
 		func() (uint32, error) { return 1000, nil },
 		true, header.HandshakeHPKE0,
 	)
 	require.NoError(t, err)
 
 	respM, err := handshake.NewMachine(
-		cert.Version2, respPeer.creds, verifier,
+		cert.Version3, respPeer.creds, verifier,
 		func() (uint32, error) { return 2000, nil },
 		false, header.HandshakeHPKE0,
 	)

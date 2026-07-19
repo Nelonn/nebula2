@@ -279,7 +279,7 @@ func TestDnsServer_Stop_beforeBind_doesNotHang(t *testing.T) {
 	}
 }
 
-// newTestPKI builds a minimal *PKI with a single v1 cert whose name and
+// newTestPKI builds a minimal *PKI with a single v3 cert whose name and
 // VPN addresses are caller-provided, suitable for exercising seedSelf and
 // QueryCert self handling.
 func newTestPKI(t *testing.T, name string, addrs []netip.Addr) *PKI {
@@ -292,8 +292,8 @@ func newTestPKI(t *testing.T, name string, addrs []netip.Addr) *PKI {
 		}
 		networks = append(networks, netip.PrefixFrom(a, bits))
 	}
-	ca, _, caKey, _ := cert_test.NewTestCaCert(cert.Version2, cert.Curve_CURVE25519, time.Time{}, time.Time{}, nil, nil, nil)
-	c, _, _, _ := cert_test.NewTestCert(cert.Version2, cert.Curve_CURVE25519, ca, caKey, name, time.Time{}, time.Time{}, networks, nil, nil)
+	ca, _, caKey, _ := cert_test.NewTestCaCert(cert.Version3, cert.Curve_CURVE25519, time.Time{}, time.Time{}, nil, nil, nil)
+	c, _, _, _ := cert_test.NewTestCert(cert.Version3, cert.Curve_CURVE25519, ca, caKey, name, time.Time{}, time.Time{}, networks, nil, nil)
 
 	addrsTable := new(bart.Lite)
 	for _, a := range addrs {
@@ -301,8 +301,8 @@ func newTestPKI(t *testing.T, name string, addrs []netip.Addr) *PKI {
 	}
 
 	cs := &CertState{
-		v2Cert:            c,
-		initiatingVersion: cert.Version2,
+		v3Cert:            c,
+		initiatingVersion: cert.Version3,
 		myVpnAddrs:        addrs,
 		myVpnAddrsTable:   addrsTable,
 	}

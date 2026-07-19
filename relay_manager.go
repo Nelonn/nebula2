@@ -2,7 +2,6 @@ package nebula
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -118,29 +117,12 @@ func (rm *relayManager) StartRelays(f *Interface, vpnIp netip.Addr, hh *Handshak
 					InitiatorRelayIndex: idx,
 				}
 
-				switch relayHostInfo.GetCert().Certificate.Version() {
-				case cert.Version1:
-					if !f.myVpnAddrs[0].Is4() {
-						hl.Error("can not establish v1 relay with a v6 network because the relay is not running a current nebula version")
-						continue
-					}
-
-					if !vpnIp.Is4() {
-						hl.Error("can not establish v1 relay with a v6 remote network because the relay is not running a current nebula version")
-						continue
-					}
-
-					b := f.myVpnAddrs[0].As4()
-					m.OldRelayFromAddr = binary.BigEndian.Uint32(b[:])
-					b = vpnIp.As4()
-					m.OldRelayToAddr = binary.BigEndian.Uint32(b[:])
-				case cert.Version2:
-					m.RelayFromAddr = netAddrToProtoAddr(f.myVpnAddrs[0])
-					m.RelayToAddr = netAddrToProtoAddr(vpnIp)
-				default:
-					hl.Error("Unknown certificate version found while creating relay")
+				if relayHostInfo.GetCert().Certificate.Version() != cert.Version3 {
+					hl.Error("Unsupported certificate version found while creating relay", "version", relayHostInfo.GetCert().Certificate.Version())
 					continue
 				}
+				m.RelayFromAddr = netAddrToProtoAddr(f.myVpnAddrs[0])
+				m.RelayToAddr = netAddrToProtoAddr(vpnIp)
 
 				msg, err := m.Marshal()
 				if err != nil {
@@ -174,29 +156,12 @@ func (rm *relayManager) StartRelays(f *Interface, vpnIp netip.Addr, hh *Handshak
 				InitiatorRelayIndex: existingRelay.LocalIndex,
 			}
 
-			switch relayHostInfo.GetCert().Certificate.Version() {
-			case cert.Version1:
-				if !f.myVpnAddrs[0].Is4() {
-					hl.Error("can not establish v1 relay with a v6 network because the relay is not running a current nebula version")
-					continue
-				}
-
-				if !vpnIp.Is4() {
-					hl.Error("can not establish v1 relay with a v6 remote network because the relay is not running a current nebula version")
-					continue
-				}
-
-				b := f.myVpnAddrs[0].As4()
-				m.OldRelayFromAddr = binary.BigEndian.Uint32(b[:])
-				b = vpnIp.As4()
-				m.OldRelayToAddr = binary.BigEndian.Uint32(b[:])
-			case cert.Version2:
-				m.RelayFromAddr = netAddrToProtoAddr(f.myVpnAddrs[0])
-				m.RelayToAddr = netAddrToProtoAddr(vpnIp)
-			default:
-				hl.Error("Unknown certificate version found while creating relay")
+			if relayHostInfo.GetCert().Certificate.Version() != cert.Version3 {
+				hl.Error("Unsupported certificate version found while creating relay", "version", relayHostInfo.GetCert().Certificate.Version())
 				continue
 			}
+			m.RelayFromAddr = netAddrToProtoAddr(f.myVpnAddrs[0])
+			m.RelayToAddr = netAddrToProtoAddr(vpnIp)
 			msg, err := m.Marshal()
 			if err != nil {
 				hl.Error("Failed to marshal Control message to create relay", "error", err)
@@ -271,23 +236,11 @@ func AddRelay(l *slog.Logger, relayHostInfo *HostInfo, hm *HostMap, vpnIp netip.
 func (rm *relayManager) EstablishRelay(relayHostInfo *HostInfo, m *NebulaControl) (*Relay, error) {
 	relay, ok := relayHostInfo.relayState.CompleteRelayByIdx(m.InitiatorRelayIndex, m.ResponderRelayIndex)
 	if !ok {
-		var relayFrom, relayTo any
-		if m.RelayFromAddr == nil {
-			relayFrom = m.OldRelayFromAddr
-		} else {
-			relayFrom = m.RelayFromAddr
-		}
-		if m.RelayToAddr == nil {
-			relayTo = m.OldRelayToAddr
-		} else {
-			relayTo = m.RelayToAddr
-		}
-
 		rm.l.Info("relayManager failed to update relay",
 			"relay", relayHostInfo.vpnAddrs[0],
 			"initiatorRelayIndex", m.InitiatorRelayIndex,
-			"relayFrom", relayFrom,
-			"relayTo", relayTo,
+			"relayFrom", m.RelayFromAddr,
+			"relayTo", m.RelayToAddr,
 		)
 		return nil, fmt.Errorf("unknown relay")
 	}
@@ -303,18 +256,9 @@ func (rm *relayManager) HandleControlMsg(h *HostInfo, d []byte, f *Interface) {
 		return
 	}
 
-	var v cert.Version
 	if msg.OldRelayFromAddr > 0 || msg.OldRelayToAddr > 0 {
-		v = cert.Version1
-
-		b := [4]byte{}
-		binary.BigEndian.PutUint32(b[:], msg.OldRelayFromAddr)
-		msg.RelayFromAddr = netAddrToProtoAddr(netip.AddrFrom4(b))
-
-		binary.BigEndian.PutUint32(b[:], msg.OldRelayToAddr)
-		msg.RelayToAddr = netAddrToProtoAddr(netip.AddrFrom4(b))
-	} else {
-		v = cert.Version2
+		h.logger(f.l).Debug("Discarding legacy relay control message")
+		return
 	}
 
 	// validate:
@@ -335,13 +279,13 @@ func (rm *relayManager) HandleControlMsg(h *HostInfo, d []byte, f *Interface) {
 
 	switch msg.Type {
 	case NebulaControl_CreateRelayRequest:
-		rm.handleCreateRelayRequest(v, h, f, msg)
+		rm.handleCreateRelayRequest(h, f, msg)
 	case NebulaControl_CreateRelayResponse:
-		rm.handleCreateRelayResponse(v, h, f, msg)
+		rm.handleCreateRelayResponse(h, f, msg)
 	}
 }
 
-func (rm *relayManager) handleCreateRelayResponse(v cert.Version, h *HostInfo, f *Interface, m *NebulaControl) {
+func (rm *relayManager) handleCreateRelayResponse(h *HostInfo, f *Interface, m *NebulaControl) {
 	//nil-checks for protoAddrToNetAddr handled by caller
 	relayFrom := protoAddrToNetAddr(m.RelayFromAddr)
 	relayTo := protoAddrToNetAddr(m.RelayToAddr)
@@ -386,26 +330,8 @@ func (rm *relayManager) handleCreateRelayResponse(v cert.Version, h *HostInfo, f
 		}
 
 		peer := peerHostInfo.vpnAddrs[0]
-		if v == cert.Version1 {
-			if !peer.Is4() {
-				rm.l.Error("Refusing to CreateRelayResponse for a v1 relay with an ipv6 address",
-					"relayFrom", peer,
-					"relayTo", relayTo,
-					"initiatorRelayIndex", resp.InitiatorRelayIndex,
-					"responderRelayIndex", resp.ResponderRelayIndex,
-					"vpnAddrs", peerHostInfo.vpnAddrs,
-				)
-				return
-			}
-
-			b := peer.As4()
-			resp.OldRelayFromAddr = binary.BigEndian.Uint32(b[:])
-			b = relayTo.As4()
-			resp.OldRelayToAddr = binary.BigEndian.Uint32(b[:])
-		} else {
-			resp.RelayFromAddr = netAddrToProtoAddr(peer)
-			resp.RelayToAddr = m.RelayToAddr
-		}
+		resp.RelayFromAddr = netAddrToProtoAddr(peer)
+		resp.RelayToAddr = m.RelayToAddr
 
 		msg, err := resp.Marshal()
 		if err != nil {
@@ -423,7 +349,7 @@ func (rm *relayManager) handleCreateRelayResponse(v cert.Version, h *HostInfo, f
 	}
 }
 
-func (rm *relayManager) handleCreateRelayRequest(v cert.Version, h *HostInfo, f *Interface, m *NebulaControl) {
+func (rm *relayManager) handleCreateRelayRequest(h *HostInfo, f *Interface, m *NebulaControl) {
 	//nil-checks for protoAddrToNetAddr handled by caller
 	from := protoAddrToNetAddr(m.RelayFromAddr)
 	target := protoAddrToNetAddr(m.RelayToAddr)
@@ -498,15 +424,8 @@ func (rm *relayManager) handleCreateRelayRequest(v cert.Version, h *HostInfo, f 
 			InitiatorRelayIndex: relay.RemoteIndex,
 		}
 
-		if v == cert.Version1 {
-			b := from.As4()
-			resp.OldRelayFromAddr = binary.BigEndian.Uint32(b[:])
-			b = target.As4()
-			resp.OldRelayToAddr = binary.BigEndian.Uint32(b[:])
-		} else {
-			resp.RelayFromAddr = netAddrToProtoAddr(from)
-			resp.RelayToAddr = netAddrToProtoAddr(target)
-		}
+		resp.RelayFromAddr = netAddrToProtoAddr(from)
+		resp.RelayToAddr = netAddrToProtoAddr(target)
 
 		msg, err := resp.Marshal()
 		if err != nil {
@@ -557,26 +476,8 @@ func (rm *relayManager) handleCreateRelayRequest(v cert.Version, h *HostInfo, f 
 			InitiatorRelayIndex: index,
 		}
 
-		if v == cert.Version1 {
-			if !h.vpnAddrs[0].Is4() {
-				rm.l.Error("Refusing to CreateRelayRequest for a v1 relay with an ipv6 address",
-					"relayFrom", h.vpnAddrs[0],
-					"relayTo", target,
-					"initiatorRelayIndex", req.InitiatorRelayIndex,
-					"responderRelayIndex", req.ResponderRelayIndex,
-					"vpnAddr", target,
-				)
-				return
-			}
-
-			b := h.vpnAddrs[0].As4()
-			req.OldRelayFromAddr = binary.BigEndian.Uint32(b[:])
-			b = target.As4()
-			req.OldRelayToAddr = binary.BigEndian.Uint32(b[:])
-		} else {
-			req.RelayFromAddr = netAddrToProtoAddr(h.vpnAddrs[0])
-			req.RelayToAddr = netAddrToProtoAddr(target)
-		}
+		req.RelayFromAddr = netAddrToProtoAddr(h.vpnAddrs[0])
+		req.RelayToAddr = netAddrToProtoAddr(target)
 
 		msg, err := req.Marshal()
 		if err != nil {

@@ -33,9 +33,9 @@ func TestHandshakeRetransmitDuplicate(t *testing.T) {
 	// (retransmission). The duplicate goes through CheckAndComplete -> ErrAlreadySeen
 	// and the cached response is resent.
 
-	ca, _, caKey, _ := cert_test.NewTestCaCert(cert.Version1, cert.Curve_CURVE25519, time.Now(), time.Now().Add(10*time.Minute), nil, nil, []string{})
-	myControl, myVpnIpNet, myUdpAddr, _ := newSimpleServer(cert.Version1, ca, caKey, "me", "10.128.0.1/24", nil)
-	theirControl, theirVpnIpNet, theirUdpAddr, _ := newSimpleServer(cert.Version1, ca, caKey, "them", "10.128.0.2/24", nil)
+	ca, _, caKey, _ := cert_test.NewTestCaCert(cert.Version3, cert.Curve_CURVE25519, time.Now(), time.Now().Add(10*time.Minute), nil, nil, []string{})
+	myControl, myVpnIpNet, myUdpAddr, _ := newSimpleServer(cert.Version3, ca, caKey, "me", "10.128.0.1/24", nil)
+	theirControl, theirVpnIpNet, theirUdpAddr, _ := newSimpleServer(cert.Version3, ca, caKey, "them", "10.128.0.2/24", nil)
 
 	myControl.InjectLightHouseAddr(theirVpnIpNet[0].Addr(), theirUdpAddr)
 	theirControl.InjectLightHouseAddr(myVpnIpNet[0].Addr(), myUdpAddr)
@@ -83,9 +83,9 @@ func TestHandshakeTruncatedPacketRecovery(t *testing.T) {
 	// Verify that a truncated handshake packet is ignored and the real
 	// packet can still complete the handshake.
 
-	ca, _, caKey, _ := cert_test.NewTestCaCert(cert.Version1, cert.Curve_CURVE25519, time.Now(), time.Now().Add(10*time.Minute), nil, nil, []string{})
-	myControl, myVpnIpNet, myUdpAddr, _ := newSimpleServer(cert.Version1, ca, caKey, "me", "10.128.0.1/24", nil)
-	theirControl, theirVpnIpNet, theirUdpAddr, _ := newSimpleServer(cert.Version1, ca, caKey, "them", "10.128.0.2/24", nil)
+	ca, _, caKey, _ := cert_test.NewTestCaCert(cert.Version3, cert.Curve_CURVE25519, time.Now(), time.Now().Add(10*time.Minute), nil, nil, []string{})
+	myControl, myVpnIpNet, myUdpAddr, _ := newSimpleServer(cert.Version3, ca, caKey, "me", "10.128.0.1/24", nil)
+	theirControl, theirVpnIpNet, theirUdpAddr, _ := newSimpleServer(cert.Version3, ca, caKey, "them", "10.128.0.2/24", nil)
 
 	myControl.InjectLightHouseAddr(theirVpnIpNet[0].Addr(), theirUdpAddr)
 	theirControl.InjectLightHouseAddr(myVpnIpNet[0].Addr(), myUdpAddr)
@@ -132,9 +132,9 @@ func TestHandshakeOrphanedMsg2Dropped(t *testing.T) {
 	// A msg2 arriving with no matching pending index should be silently dropped
 	// with no response sent and no state changes.
 
-	ca, _, caKey, _ := cert_test.NewTestCaCert(cert.Version1, cert.Curve_CURVE25519, time.Now(), time.Now().Add(10*time.Minute), nil, nil, []string{})
-	myControl, myVpnIpNet, myUdpAddr, _ := newSimpleServer(cert.Version1, ca, caKey, "me", "10.128.0.1/24", nil)
-	theirControl, theirVpnIpNet, theirUdpAddr, _ := newSimpleServer(cert.Version1, ca, caKey, "them", "10.128.0.2/24", nil)
+	ca, _, caKey, _ := cert_test.NewTestCaCert(cert.Version3, cert.Curve_CURVE25519, time.Now(), time.Now().Add(10*time.Minute), nil, nil, []string{})
+	myControl, myVpnIpNet, myUdpAddr, _ := newSimpleServer(cert.Version3, ca, caKey, "me", "10.128.0.1/24", nil)
+	theirControl, theirVpnIpNet, theirUdpAddr, _ := newSimpleServer(cert.Version3, ca, caKey, "them", "10.128.0.2/24", nil)
 
 	myControl.InjectLightHouseAddr(theirVpnIpNet[0].Addr(), theirUdpAddr)
 	theirControl.InjectLightHouseAddr(myVpnIpNet[0].Addr(), myUdpAddr)
@@ -154,7 +154,7 @@ func TestHandshakeOrphanedMsg2Dropped(t *testing.T) {
 	myIndexes := len(myControl.ListHostmapIndexes(false))
 
 	t.Log("Inject a fake msg2 with unknown RemoteIndex")
-	myControl.InjectUDPPacket(makeHandshakePacket(theirUdpAddr, myUdpAddr, header.HandshakeIXPSK0, 0xDEADBEEF, 2))
+	myControl.InjectUDPPacket(makeHandshakePacket(theirUdpAddr, myUdpAddr, header.MessageSubType(0), 0xDEADBEEF, 2))
 
 	t.Log("Verify no new indexes created")
 	assert.Equal(t, myIndexes, len(myControl.ListHostmapIndexes(false)))
@@ -175,9 +175,9 @@ func TestHandshakeUnknownMessageCounter(t *testing.T) {
 	// A handshake packet with an unexpected message counter should be silently
 	// dropped with no side effects and no UDP response.
 
-	ca, _, caKey, _ := cert_test.NewTestCaCert(cert.Version1, cert.Curve_CURVE25519, time.Now(), time.Now().Add(10*time.Minute), nil, nil, []string{})
-	myControl, _, myUdpAddr, _ := newSimpleServer(cert.Version1, ca, caKey, "me", "10.128.0.1/24", nil)
-	theirControl, theirVpnIpNet, theirUdpAddr, _ := newSimpleServer(cert.Version1, ca, caKey, "them", "10.128.0.2/24", nil)
+	ca, _, caKey, _ := cert_test.NewTestCaCert(cert.Version3, cert.Curve_CURVE25519, time.Now(), time.Now().Add(10*time.Minute), nil, nil, []string{})
+	myControl, _, myUdpAddr, _ := newSimpleServer(cert.Version3, ca, caKey, "me", "10.128.0.1/24", nil)
+	theirControl, theirVpnIpNet, theirUdpAddr, _ := newSimpleServer(cert.Version3, ca, caKey, "them", "10.128.0.2/24", nil)
 
 	myControl.InjectLightHouseAddr(theirVpnIpNet[0].Addr(), theirUdpAddr)
 
@@ -185,10 +185,10 @@ func TestHandshakeUnknownMessageCounter(t *testing.T) {
 	theirControl.Start()
 
 	t.Log("Inject handshake with MessageCounter=3")
-	myControl.InjectUDPPacket(makeHandshakePacket(theirUdpAddr, myUdpAddr, header.HandshakeIXPSK0, 0, 3))
+	myControl.InjectUDPPacket(makeHandshakePacket(theirUdpAddr, myUdpAddr, header.MessageSubType(0), 0, 3))
 
 	t.Log("Inject handshake with MessageCounter=99")
-	myControl.InjectUDPPacket(makeHandshakePacket(theirUdpAddr, myUdpAddr, header.HandshakeIXPSK0, 0, 99))
+	myControl.InjectUDPPacket(makeHandshakePacket(theirUdpAddr, myUdpAddr, header.MessageSubType(0), 0, 99))
 
 	t.Log("Verify no tunnels or pending handshakes")
 	assert.Empty(t, myControl.ListHostmapHosts(false))
@@ -206,9 +206,9 @@ func TestHandshakeUnknownSubtype(t *testing.T) {
 	t.Parallel()
 	// A handshake packet with an unknown subtype should be silently dropped.
 
-	ca, _, caKey, _ := cert_test.NewTestCaCert(cert.Version1, cert.Curve_CURVE25519, time.Now(), time.Now().Add(10*time.Minute), nil, nil, []string{})
-	myControl, _, myUdpAddr, _ := newSimpleServer(cert.Version1, ca, caKey, "me", "10.128.0.1/24", nil)
-	theirControl, _, theirUdpAddr, _ := newSimpleServer(cert.Version1, ca, caKey, "them", "10.128.0.2/24", nil)
+	ca, _, caKey, _ := cert_test.NewTestCaCert(cert.Version3, cert.Curve_CURVE25519, time.Now(), time.Now().Add(10*time.Minute), nil, nil, []string{})
+	myControl, _, myUdpAddr, _ := newSimpleServer(cert.Version3, ca, caKey, "me", "10.128.0.1/24", nil)
+	theirControl, _, theirUdpAddr, _ := newSimpleServer(cert.Version3, ca, caKey, "them", "10.128.0.2/24", nil)
 
 	myControl.Start()
 	theirControl.Start()
@@ -233,14 +233,14 @@ func TestHandshakeLateResponse(t *testing.T) {
 	// After a handshake times out, a late response should be silently ignored
 	// with no new tunnels created.
 
-	ca, _, caKey, _ := cert_test.NewTestCaCert(cert.Version1, cert.Curve_CURVE25519, time.Now(), time.Now().Add(10*time.Minute), nil, nil, []string{})
-	myControl, myVpnIpNet, _, _ := newSimpleServer(cert.Version1, ca, caKey, "me", "10.128.0.1/24", m{
+	ca, _, caKey, _ := cert_test.NewTestCaCert(cert.Version3, cert.Curve_CURVE25519, time.Now(), time.Now().Add(10*time.Minute), nil, nil, []string{})
+	myControl, myVpnIpNet, _, _ := newSimpleServer(cert.Version3, ca, caKey, "me", "10.128.0.1/24", m{
 		"handshakes": m{
 			"try_interval": "200ms",
 			"retries":      2,
 		},
 	})
-	theirControl, theirVpnIpNet, theirUdpAddr, _ := newSimpleServer(cert.Version1, ca, caKey, "them", "10.128.0.2/24", nil)
+	theirControl, theirVpnIpNet, theirUdpAddr, _ := newSimpleServer(cert.Version3, ca, caKey, "them", "10.128.0.2/24", nil)
 
 	myControl.InjectLightHouseAddr(theirVpnIpNet[0].Addr(), theirUdpAddr)
 
@@ -283,8 +283,8 @@ func TestHandshakeSelfConnectionRejected(t *testing.T) {
 	// Verify that a node rejects a handshake containing its own VPN IP in the
 	// peer cert. We do this by sending the initiator's own msg1 back to itself.
 
-	ca, _, caKey, _ := cert_test.NewTestCaCert(cert.Version1, cert.Curve_CURVE25519, time.Now(), time.Now().Add(10*time.Minute), nil, nil, []string{})
-	myControl, myVpnIpNet, myUdpAddr, _ := newSimpleServer(cert.Version1, ca, caKey, "me", "10.128.0.1/24", nil)
+	ca, _, caKey, _ := cert_test.NewTestCaCert(cert.Version3, cert.Curve_CURVE25519, time.Now(), time.Now().Add(10*time.Minute), nil, nil, []string{})
+	myControl, myVpnIpNet, myUdpAddr, _ := newSimpleServer(cert.Version3, ca, caKey, "me", "10.128.0.1/24", nil)
 
 	// Need a lighthouse entry to trigger a handshake
 	myControl.InjectLightHouseAddr(netip.MustParseAddr("10.128.0.2"), netip.MustParseAddrPort("10.0.0.2:4242"))
@@ -331,14 +331,14 @@ func TestHandshakeMessageCounter0Dropped(t *testing.T) {
 	t.Parallel()
 	// MessageCounter=0 is not a valid handshake message and should be dropped.
 
-	ca, _, caKey, _ := cert_test.NewTestCaCert(cert.Version1, cert.Curve_CURVE25519, time.Now(), time.Now().Add(10*time.Minute), nil, nil, []string{})
-	myControl, _, myUdpAddr, _ := newSimpleServer(cert.Version1, ca, caKey, "me", "10.128.0.1/24", nil)
-	_, _, theirUdpAddr, _ := newSimpleServer(cert.Version1, ca, caKey, "them", "10.128.0.2/24", nil)
+	ca, _, caKey, _ := cert_test.NewTestCaCert(cert.Version3, cert.Curve_CURVE25519, time.Now(), time.Now().Add(10*time.Minute), nil, nil, []string{})
+	myControl, _, myUdpAddr, _ := newSimpleServer(cert.Version3, ca, caKey, "me", "10.128.0.1/24", nil)
+	_, _, theirUdpAddr, _ := newSimpleServer(cert.Version3, ca, caKey, "them", "10.128.0.2/24", nil)
 
 	myControl.Start()
 
 	t.Log("Inject handshake with MessageCounter=0")
-	myControl.InjectUDPPacket(makeHandshakePacket(theirUdpAddr, myUdpAddr, header.HandshakeIXPSK0, 0, 0))
+	myControl.InjectUDPPacket(makeHandshakePacket(theirUdpAddr, myUdpAddr, header.MessageSubType(0), 0, 0))
 
 	time.Sleep(100 * time.Millisecond)
 	assert.Empty(t, myControl.ListHostmapHosts(false))
@@ -354,8 +354,8 @@ func TestHandshakeRemoteAllowList(t *testing.T) {
 	// response and no state changes. Then verify the same packet from an
 	// allowed IP succeeds.
 
-	ca, _, caKey, _ := cert_test.NewTestCaCert(cert.Version1, cert.Curve_CURVE25519, time.Now(), time.Now().Add(10*time.Minute), nil, nil, []string{})
-	myControl, myVpnIpNet, myUdpAddr, _ := newSimpleServer(cert.Version1, ca, caKey, "me", "10.128.0.1/24", m{
+	ca, _, caKey, _ := cert_test.NewTestCaCert(cert.Version3, cert.Curve_CURVE25519, time.Now(), time.Now().Add(10*time.Minute), nil, nil, []string{})
+	myControl, myVpnIpNet, myUdpAddr, _ := newSimpleServer(cert.Version3, ca, caKey, "me", "10.128.0.1/24", m{
 		"lighthouse": m{
 			"remote_allow_list": m{
 				"10.0.0.0/8": true,
@@ -363,7 +363,7 @@ func TestHandshakeRemoteAllowList(t *testing.T) {
 			},
 		},
 	})
-	theirControl, theirVpnIpNet, theirUdpAddr, _ := newSimpleServer(cert.Version1, ca, caKey, "them", "10.128.0.2/24", nil)
+	theirControl, theirVpnIpNet, theirUdpAddr, _ := newSimpleServer(cert.Version3, ca, caKey, "them", "10.128.0.2/24", nil)
 
 	myControl.InjectLightHouseAddr(theirVpnIpNet[0].Addr(), theirUdpAddr)
 	theirControl.InjectLightHouseAddr(myVpnIpNet[0].Addr(), myUdpAddr)
@@ -412,9 +412,9 @@ func TestHandshakeAlreadySeenPreferredRemote(t *testing.T) {
 	// When a duplicate msg1 arrives via ErrAlreadySeen, verify the tunnel
 	// remains functional and hostmap index count is stable.
 
-	ca, _, caKey, _ := cert_test.NewTestCaCert(cert.Version1, cert.Curve_CURVE25519, time.Now(), time.Now().Add(10*time.Minute), nil, nil, []string{})
-	myControl, myVpnIpNet, myUdpAddr, _ := newSimpleServer(cert.Version1, ca, caKey, "me", "10.128.0.1/24", nil)
-	theirControl, theirVpnIpNet, theirUdpAddr, _ := newSimpleServer(cert.Version1, ca, caKey, "them", "10.128.0.2/24", nil)
+	ca, _, caKey, _ := cert_test.NewTestCaCert(cert.Version3, cert.Curve_CURVE25519, time.Now(), time.Now().Add(10*time.Minute), nil, nil, []string{})
+	myControl, myVpnIpNet, myUdpAddr, _ := newSimpleServer(cert.Version3, ca, caKey, "me", "10.128.0.1/24", nil)
+	theirControl, theirVpnIpNet, theirUdpAddr, _ := newSimpleServer(cert.Version3, ca, caKey, "them", "10.128.0.2/24", nil)
 
 	myControl.InjectLightHouseAddr(theirVpnIpNet[0].Addr(), theirUdpAddr)
 	theirControl.InjectLightHouseAddr(myVpnIpNet[0].Addr(), myUdpAddr)
@@ -460,10 +460,10 @@ func TestHandshakeWrongResponderPacketStore(t *testing.T) {
 	// transferred to the new handshake, the evil tunnel is closed, evil's
 	// address is blocked, and the correct tunnel is eventually established.
 
-	ca, _, caKey, _ := cert_test.NewTestCaCert(cert.Version1, cert.Curve_CURVE25519, time.Now(), time.Now().Add(10*time.Minute), nil, nil, []string{})
-	myControl, myVpnIpNet, myUdpAddr, _ := newSimpleServer(cert.Version1, ca, caKey, "me", "10.128.0.100/24", nil)
-	theirControl, theirVpnIpNet, theirUdpAddr, _ := newSimpleServer(cert.Version1, ca, caKey, "them", "10.128.0.99/24", nil)
-	evilControl, evilVpnIpNet, evilUdpAddr, _ := newSimpleServer(cert.Version1, ca, caKey, "evil", "10.128.0.2/24", nil)
+	ca, _, caKey, _ := cert_test.NewTestCaCert(cert.Version3, cert.Curve_CURVE25519, time.Now(), time.Now().Add(10*time.Minute), nil, nil, []string{})
+	myControl, myVpnIpNet, myUdpAddr, _ := newSimpleServer(cert.Version3, ca, caKey, "me", "10.128.0.100/24", nil)
+	theirControl, theirVpnIpNet, theirUdpAddr, _ := newSimpleServer(cert.Version3, ca, caKey, "them", "10.128.0.99/24", nil)
+	evilControl, evilVpnIpNet, evilUdpAddr, _ := newSimpleServer(cert.Version3, ca, caKey, "evil", "10.128.0.2/24", nil)
 
 	myControl.InjectLightHouseAddr(theirVpnIpNet[0].Addr(), evilUdpAddr)
 
@@ -523,10 +523,10 @@ func TestHandshakeRelayComplete(t *testing.T) {
 	// Verify that a relay handshake completes correctly and relay state is
 	// properly maintained on all three nodes.
 
-	ca, _, caKey, _ := cert_test.NewTestCaCert(cert.Version1, cert.Curve_CURVE25519, time.Now(), time.Now().Add(10*time.Minute), nil, nil, []string{})
-	myControl, myVpnIpNet, _, _ := newSimpleServer(cert.Version1, ca, caKey, "me", "10.128.0.1/24", m{"relay": m{"use_relays": true}})
-	relayControl, relayVpnIpNet, relayUdpAddr, _ := newSimpleServer(cert.Version1, ca, caKey, "relay", "10.128.0.128/24", m{"relay": m{"am_relay": true}})
-	theirControl, theirVpnIpNet, theirUdpAddr, _ := newSimpleServer(cert.Version1, ca, caKey, "them", "10.128.0.2/24", m{"relay": m{"use_relays": true}})
+	ca, _, caKey, _ := cert_test.NewTestCaCert(cert.Version3, cert.Curve_CURVE25519, time.Now(), time.Now().Add(10*time.Minute), nil, nil, []string{})
+	myControl, myVpnIpNet, _, _ := newSimpleServer(cert.Version3, ca, caKey, "me", "10.128.0.1/24", m{"relay": m{"use_relays": true}})
+	relayControl, relayVpnIpNet, relayUdpAddr, _ := newSimpleServer(cert.Version3, ca, caKey, "relay", "10.128.0.128/24", m{"relay": m{"am_relay": true}})
+	theirControl, theirVpnIpNet, theirUdpAddr, _ := newSimpleServer(cert.Version3, ca, caKey, "them", "10.128.0.2/24", m{"relay": m{"use_relays": true}})
 
 	myControl.InjectLightHouseAddr(relayVpnIpNet[0].Addr(), relayUdpAddr)
 	myControl.InjectRelays(theirVpnIpNet[0].Addr(), []netip.Addr{relayVpnIpNet[0].Addr()})

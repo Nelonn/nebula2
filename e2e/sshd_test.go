@@ -22,7 +22,7 @@ import (
 func TestSSHDLifecycle(t *testing.T) {
 	// TestSSHDLifecycle exercises the in-process sshd through several config reloads and a Control.Stop.
 	ca, _, caKey, _ := cert_test.NewTestCaCert(
-		cert.Version1, cert.Curve_CURVE25519,
+		cert.Version3, cert.Curve_CURVE25519,
 		time.Now(), time.Now().Add(10*time.Minute),
 		nil, nil, []string{},
 	)
@@ -42,7 +42,7 @@ func TestSSHDLifecycle(t *testing.T) {
 			}},
 		},
 	}
-	control, _, _, _ := newSimpleServer(cert.Version1, ca, caKey, "sshd-test", "10.222.0.1/24", overrides)
+	control, _, _, _ := newSimpleServer(cert.Version3, ca, caKey, "sshd-test", "10.222.0.1/24", overrides)
 	control.Start()
 	t.Cleanup(func() { control.Stop() })
 

@@ -138,7 +138,7 @@ func BenchmarkLighthouseHandleRequest(b *testing.B) {
 		req := &NebulaMeta{
 			Type: NebulaMeta_HostQuery,
 			Details: &NebulaMetaDetails{
-				OldVpnAddr:  4,
+				VpnAddr:     netAddrToProtoAddr(netip.MustParseAddr("0.0.0.4")),
 				V4AddrPorts: nil,
 			},
 		}
@@ -153,7 +153,7 @@ func BenchmarkLighthouseHandleRequest(b *testing.B) {
 		req := &NebulaMeta{
 			Type: NebulaMeta_HostQuery,
 			Details: &NebulaMetaDetails{
-				OldVpnAddr:  3,
+				VpnAddr:     netAddrToProtoAddr(vpnIp2),
 				V4AddrPorts: nil,
 			},
 		}
@@ -435,12 +435,7 @@ func newLHHostRequest(fromAddr netip.AddrPort, myVpnIp, queryVpnIp netip.Addr, l
 		Details: &NebulaMetaDetails{},
 	}
 
-	if queryVpnIp.Is4() {
-		bip := queryVpnIp.As4()
-		req.Details.OldVpnAddr = binary.BigEndian.Uint32(bip[:])
-	} else {
-		req.Details.VpnAddr = netAddrToProtoAddr(queryVpnIp)
-	}
+	req.Details.VpnAddr = netAddrToProtoAddr(queryVpnIp)
 
 	b, err := req.Marshal()
 	if err != nil {
@@ -461,12 +456,7 @@ func newLHHostUpdate(fromAddr netip.AddrPort, vpnIp netip.Addr, addrs []netip.Ad
 		Details: &NebulaMetaDetails{},
 	}
 
-	if vpnIp.Is4() {
-		bip := vpnIp.As4()
-		req.Details.OldVpnAddr = binary.BigEndian.Uint32(bip[:])
-	} else {
-		req.Details.VpnAddr = netAddrToProtoAddr(vpnIp)
-	}
+	req.Details.VpnAddr = netAddrToProtoAddr(vpnIp)
 
 	for _, v := range addrs {
 		if v.Addr().Is4() {

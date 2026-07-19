@@ -1255,12 +1255,11 @@ func TestNewFirewallFromConfig(t *testing.T) {
 	l := test.NewLogger()
 	// Test a bad rule definition
 	c := &dummyCert{}
-	cs, err := newCertState(cert.Version2, nil, c, false, cert.Curve_CURVE25519, nil, "aes", nil, nil, false)
-	require.NoError(t, err)
+	cs := &CertState{v3Cert: c, initiatingVersion: cert.Version3}
 
 	conf := config.NewC(test.NewLogger())
 	conf.Settings["firewall"] = map[string]any{"outbound": "asdf"}
-	_, err = NewFirewallFromConfig(l, cs, conf)
+	_, err := NewFirewallFromConfig(l, cs, conf)
 	require.EqualError(t, err, "firewall.outbound failed to parse, should be an array of rules")
 
 	// Test both port and code

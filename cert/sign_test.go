@@ -14,13 +14,26 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestCertificateV1_Sign(t *testing.T) {
+func TestCertificateV3_Sign(t *testing.T) {
 	before := time.Now().Add(time.Second * -60).Round(time.Second)
 	after := time.Now().Add(time.Second * 60).Round(time.Second)
 	pubKey := []byte("1234567890abcedfghij1234567890ab")
+	caPub, caPriv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	ca, err := (&TBSCertificate{
+		Version:   Version3,
+		Name:      "ca",
+		NotBefore: before,
+		NotAfter:  after,
+		PublicKey: caPub,
+		IsCA:      true,
+	}).Sign(nil, Curve_CURVE25519, caPriv)
+	require.NoError(t, err)
+	hpkePub, _, err := GenerateHPKEKeyPair(false)
+	require.NoError(t, err)
 
 	tbs := TBSCertificate{
-		Version: Version1,
+		Version: Version3,
 		Name:    "testing",
 		Networks: []netip.Prefix{
 			mustParsePrefixUnmapped("10.1.1.1/24"),
@@ -33,30 +46,46 @@ func TestCertificateV1_Sign(t *testing.T) {
 		Groups:    []string{"test-group1", "test-group2", "test-group3"},
 		NotBefore: before,
 		NotAfter:  after,
-		PublicKey: pubKey,
-		IsCA:      false,
+		PublicKey:     pubKey,
+		HPKEPublicKey: hpkePub,
+		IsCA:         false,
 	}
 
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	c, err := tbs.Sign(&certificateV1{details: detailsV1{notBefore: before, notAfter: after}}, Curve_CURVE25519, priv)
+	c, err := tbs.Sign(ca, Curve_CURVE25519, caPriv)
 	require.NoError(t, err)
 	assert.NotNil(t, c)
-	assert.True(t, c.CheckSignature(pub))
+	assert.True(t, c.CheckSignature(caPub))
 
 	b, err := c.Marshal()
 	require.NoError(t, err)
-	uc, err := unmarshalCertificateV1(b, nil)
+	uc, err := unmarshalCertificateV3(b, nil, Curve_CURVE25519)
 	require.NoError(t, err)
 	assert.NotNil(t, uc)
 }
 
-func TestCertificateV1_SignP256(t *testing.T) {
+func TestCertificateV3_SignP256(t *testing.T) {
 	before := time.Now().Add(time.Second * -60).Round(time.Second)
 	after := time.Now().Add(time.Second * 60).Round(time.Second)
 	pubKey := []byte("01234567890abcedfghij1234567890ab1234567890abcedfghij1234567890ab")
+	caPriv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	caPub := elliptic.Marshal(elliptic.P256(), caPriv.PublicKey.X, caPriv.PublicKey.Y)
+	caRawPriv := caPriv.D.FillBytes(make([]byte, 32))
+	ca, err := (&TBSCertificate{
+		Version:   Version3,
+		Name:      "ca",
+		NotBefore: before,
+		NotAfter:  after,
+		PublicKey: caPub,
+		IsCA:      true,
+		Curve:     Curve_P256,
+	}).Sign(nil, Curve_P256, caRawPriv)
+	require.NoError(t, err)
+	hpkePub, _, err := GenerateHPKEKeyPair(false)
+	require.NoError(t, err)
 
 	tbs := TBSCertificate{
-		Version: Version1,
+		Version: Version3,
 		Name:    "testing",
 		Networks: []netip.Prefix{
 			mustParsePrefixUnmapped("10.1.1.1/24"),
@@ -69,24 +98,20 @@ func TestCertificateV1_SignP256(t *testing.T) {
 		Groups:    []string{"test-group1", "test-group2", "test-group3"},
 		NotBefore: before,
 		NotAfter:  after,
-		PublicKey: pubKey,
-		IsCA:      false,
-		Curve:     Curve_P256,
+		PublicKey:     pubKey,
+		HPKEPublicKey: hpkePub,
+		IsCA:         false,
+		Curve:        Curve_P256,
 	}
 
-	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	require.NoError(t, err)
-	pub := elliptic.Marshal(elliptic.P256(), priv.PublicKey.X, priv.PublicKey.Y)
-	rawPriv := priv.D.FillBytes(make([]byte, 32))
-
-	c, err := tbs.Sign(&certificateV1{details: detailsV1{notBefore: before, notAfter: after}}, Curve_P256, rawPriv)
+	c, err := tbs.Sign(ca, Curve_P256, caRawPriv)
 	require.NoError(t, err)
 	assert.NotNil(t, c)
-	assert.True(t, c.CheckSignature(pub))
+	assert.True(t, c.CheckSignature(caPub))
 
 	b, err := c.Marshal()
 	require.NoError(t, err)
-	uc, err := unmarshalCertificateV1(b, nil)
+	uc, err := unmarshalCertificateV3(b, nil, Curve_P256)
 	require.NoError(t, err)
 	assert.NotNil(t, uc)
 }
@@ -97,7 +122,7 @@ func TestCertificate_SignP256_AlwaysNormalized(t *testing.T) {
 	pubKey := []byte("01234567890abcedfghij1234567890ab1234567890abcedfghij1234567890ab")
 
 	tbs := TBSCertificate{
-		Version: Version1,
+		Version: Version3,
 		Name:    "testing",
 		Networks: []netip.Prefix{
 			mustParsePrefixUnmapped("10.1.1.1/24"),
@@ -121,11 +146,6 @@ func TestCertificate_SignP256_AlwaysNormalized(t *testing.T) {
 	rawPriv := priv.D.FillBytes(make([]byte, 32))
 
 	for i := 0; i < 1000; i++ {
-		if i&1 == 1 {
-			tbs.Version = Version1
-		} else {
-			tbs.Version = Version2
-		}
 		c, err := tbs.Sign(nil, Curve_P256, rawPriv)
 		require.NoError(t, err)
 		assert.NotNil(t, c)

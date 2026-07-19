@@ -43,10 +43,9 @@ func Test_NewConnectionManagerTest(t *testing.T) {
 	hostMap.preferredRanges.Store(&preferredRanges)
 
 	cs := &CertState{
-		initiatingVersion: cert.Version1,
+		initiatingVersion: cert.Version3,
 		privateKey:        []byte{},
-		v1Cert:            &dummyCert{version: cert.Version1},
-		v1Credential:      nil,
+		v3Cert:            &dummyCert{version: cert.Version3},
 	}
 
 	lh := newTestLighthouse()
@@ -78,7 +77,7 @@ func Test_NewConnectionManagerTest(t *testing.T) {
 		remoteIndexId: 9901,
 	}
 	hostinfo.ConnectionState = &ConnectionState{
-		myCert: &dummyCert{version: cert.Version1},
+		myCert: &dummyCert{version: cert.Version3},
 	}
 	nc.hostMap.unlockedAddHostInfo(hostinfo, ifce)
 
@@ -125,10 +124,9 @@ func Test_NewConnectionManagerTest2(t *testing.T) {
 	hostMap.preferredRanges.Store(&preferredRanges)
 
 	cs := &CertState{
-		initiatingVersion: cert.Version1,
+		initiatingVersion: cert.Version3,
 		privateKey:        []byte{},
-		v1Cert:            &dummyCert{version: cert.Version1},
-		v1Credential:      nil,
+		v3Cert:            &dummyCert{version: cert.Version3},
 	}
 
 	lh := newTestLighthouse()
@@ -160,7 +158,7 @@ func Test_NewConnectionManagerTest2(t *testing.T) {
 		remoteIndexId: 9901,
 	}
 	hostinfo.ConnectionState = &ConnectionState{
-		myCert: &dummyCert{version: cert.Version1},
+		myCert: &dummyCert{version: cert.Version3},
 	}
 	nc.hostMap.unlockedAddHostInfo(hostinfo, ifce)
 
@@ -209,10 +207,9 @@ func Test_NewConnectionManager_DisconnectInactive(t *testing.T) {
 	hostMap.preferredRanges.Store(&preferredRanges)
 
 	cs := &CertState{
-		initiatingVersion: cert.Version1,
+		initiatingVersion: cert.Version3,
 		privateKey:        []byte{},
-		v1Cert:            &dummyCert{version: cert.Version1},
-		v1Credential:      nil,
+		v3Cert:            &dummyCert{version: cert.Version3},
 	}
 
 	lh := newTestLighthouse()
@@ -245,7 +242,7 @@ func Test_NewConnectionManager_DisconnectInactive(t *testing.T) {
 		remoteIndexId: 9901,
 	}
 	hostinfo.ConnectionState = &ConnectionState{
-		myCert: &dummyCert{version: cert.Version1},
+		myCert: &dummyCert{version: cert.Version3},
 	}
 	nc.hostMap.unlockedAddHostInfo(hostinfo, ifce)
 
@@ -308,7 +305,7 @@ func Test_NewConnectionManagerTest_DisconnectInvalid(t *testing.T) {
 	// Generate keys for CA and peer's cert.
 	pubCA, privCA, _ := ed25519.GenerateKey(rand.Reader)
 	tbs := &cert.TBSCertificate{
-		Version:   1,
+		Version:   cert.Version3,
 		Name:      "ca",
 		IsCA:      true,
 		NotBefore: now,
@@ -323,22 +320,25 @@ func Test_NewConnectionManagerTest_DisconnectInvalid(t *testing.T) {
 
 	pubCrt, _, _ := ed25519.GenerateKey(rand.Reader)
 	tbs = &cert.TBSCertificate{
-		Version:   1,
+		Version:   cert.Version3,
 		Name:      "host",
 		Networks:  []netip.Prefix{vpncidr},
 		NotBefore: now,
 		NotAfter:  now.Add(60 * time.Second),
 		PublicKey: pubCrt,
 	}
+	hpkePub, _, err := cert.GenerateHPKEKeyPair(false)
+	require.NoError(t, err)
+	tbs.HPKEPublicKey = hpkePub
 	peerCert, err := tbs.Sign(caCert, cert.Curve_CURVE25519, privCA)
 	require.NoError(t, err)
 
 	cachedPeerCert, err := ncp.VerifyCertificate(now.Add(time.Second), peerCert)
 
 	cs := &CertState{
-		privateKey:   []byte{},
-		v1Cert:       &dummyCert{},
-		v1Credential: nil,
+		initiatingVersion: cert.Version3,
+		privateKey:        []byte{},
+		v3Cert:            &dummyCert{version: cert.Version3},
 	}
 
 	lh := newTestLighthouse()

@@ -8,19 +8,17 @@ import (
 	"github.com/slackhq/nebula/cert/p256"
 )
 
+type m = map[string]any
+
 type Version uint8
 
 const (
-	VersionPre1 Version = 0
-	Version1    Version = 1
-	Version2    Version = 2
-	Version3    Version = 3 // HPKE-based handshake with optional ML-KEM hybrid keys
+	Version3 Version = 3 // HPKE-based handshake with optional ML-KEM hybrid keys
 )
 
 type Certificate interface {
-	// Version defines the underlying certificate structure and wire protocol version
-	// Version1 certificates are ipv4 only and uses protobuf serialization
-	// Version2 certificates are ipv4 or ipv6 and uses asn.1 serialization
+	// Version defines the underlying certificate structure and wire protocol version.
+	// Only Version3 certificates are supported.
 	Version() Version
 
 	// Name is the human-readable name that identifies this certificate.
@@ -136,13 +134,6 @@ func Recombine(v Version, rawCertBytes, publicKey []byte, curve Curve) (Certific
 
 	switch v {
 	// Implementations must ensure the result is a valid cert!
-	case VersionPre1, Version1:
-		if publicKey == nil {
-			return nil, ErrNoPeerStaticKey
-		}
-		c, err = unmarshalCertificateV1(rawCertBytes, publicKey)
-	case Version2:
-		c, err = unmarshalCertificateV2(rawCertBytes, publicKey, curve)
 	case Version3:
 		c, err = unmarshalCertificateV3(rawCertBytes, publicKey, curve)
 	default:
@@ -174,10 +165,6 @@ func CalculateAlternateFingerprint(c Certificate) (string, error) {
 	}
 
 	switch v := nc.(type) {
-	case *certificateV1:
-		err = v.setSignature(b)
-	case *certificateV2:
-		err = v.setSignature(b)
 	case *certificateV3:
 		err = v.setSignature(b)
 	default:

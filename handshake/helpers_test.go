@@ -7,7 +7,6 @@ import (
 
 	"github.com/flynn/noise"
 	"github.com/slackhq/nebula/cert"
-	ct "github.com/slackhq/nebula/cert_test"
 	"github.com/slackhq/nebula/header"
 	"github.com/slackhq/nebula/hpke"
 	"github.com/stretchr/testify/require"
@@ -31,26 +30,34 @@ func newTestPeer(t *testing.T, ca cert.Certificate, caKey []byte, name string, n
 
 func newTestPeerWithCipher(t *testing.T, ca cert.Certificate, caKey []byte, name string, networks []netip.Prefix, cipher noise.CipherFunc) *testPeer {
 	t.Helper()
-	c, _, _, _ := ct.NewTestCert(
-		cert.Version2, cert.Curve_CURVE25519, ca, caKey,
-		name, ca.NotBefore(), ca.NotAfter(), networks, nil, nil,
-	)
+	hSuite := hpke.DefaultHPKE
+	hpkePub, hpkePriv, err := hSuite.KEM.GenerateKeyPair()
+	require.NoError(t, err)
+
+	c, err := (&cert.TBSCertificate{
+		Version:       cert.Version3,
+		Curve:         cert.Curve_CURVE25519,
+		Name:          name,
+		Networks:      networks,
+		NotBefore:     ca.NotBefore(),
+		NotAfter:      ca.NotAfter(),
+		PublicKey:     hpkePub,
+		HPKEPublicKey: hpkePub,
+		IsCA:          false,
+	}).Sign(ca, ca.Curve(), caKey)
+	require.NoError(t, err)
 
 	hsBytes, err := c.MarshalForHandshakes()
 	require.NoError(t, err)
 
 	ncs := noise.NewCipherSuite(noise.DH25519, cipher, noise.HashSHA256)
-	hSuite := hpke.DefaultHPKE
-
-	hpkePub, hpkePriv, err := hSuite.KEM.GenerateKeyPair()
-	require.NoError(t, err)
 
 	return &testPeer{
-		version:  cert.Version2,
+		version:  cert.Version3,
 		hpkePub:  hpkePub,
 		hpkePriv: hpkePriv,
 		creds: map[cert.Version]*Credential{
-			cert.Version2: NewCredential(c, hsBytes, hpkePriv, hpkePub, ncs, hSuite),
+			cert.Version3: NewCredential(c, hsBytes, hpkePriv, hpkePub, ncs, hSuite),
 		},
 	}
 }

@@ -109,6 +109,17 @@ func NewTestCert(v Version, curve Curve, ca Certificate, key []byte, name string
 		PublicKey:      pub,
 		IsCA:           false,
 	}
+	if v == Version3 {
+		if curve == Curve_CURVE25519 {
+			nc.HPKEPublicKey = pub
+		} else {
+			hpkePub, _, err := GenerateHPKEKeyPair(false)
+			if err != nil {
+				panic(err)
+			}
+			nc.HPKEPublicKey = hpkePub
+		}
+	}
 
 	c, err := nc.Sign(ca, ca.Curve(), key)
 	if err != nil {

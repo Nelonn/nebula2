@@ -311,6 +311,9 @@ func (c *certificateV3) validate() error {
 	if len(c.publicKey) == 0 {
 		return ErrInvalidPublicKey
 	}
+	if len(c.hpkePublicKey) != 0 && !validHPKEPublicKeyLen(len(c.hpkePublicKey)) {
+		return NewErrInvalidCertificateProperties("invalid HPKE public key length: %d", len(c.hpkePublicKey))
+	}
 	if !c.details.isCA && len(c.details.networks) == 0 {
 		return NewErrInvalidCertificateProperties("non-CA certificate must contain at least 1 network")
 	}
@@ -610,6 +613,10 @@ type HPKEPublicKeyer interface {
 }
 
 const hybridPubKeyLen = 32 + mlkem.EncapsulationKeySize768
+
+func validHPKEPublicKeyLen(l int) bool {
+	return l == 32 || l == hybridPubKeyLen
+}
 
 func VerifyHPKEPrivateKey(hpkePub, hpkePriv []byte) error {
 	switch {

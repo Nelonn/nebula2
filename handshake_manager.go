@@ -676,16 +676,14 @@ func hsTimeout(tries int64, interval time.Duration) time.Duration {
 // buildStage0Packet creates the initial handshake packet for the initiator.
 func (hm *HandshakeManager) buildStage0Packet(hh *HandshakeHostInfo) bool {
 	cs := hm.f.pki.getCertState()
-	v := cs.DefaultVersion()
-	if hh.initiatingVersionOverride != cert.VersionPre1 {
+	v := cert.Version3
+	if hh.initiatingVersionOverride != 0 {
 		v = hh.initiatingVersionOverride
-	} else if v < cert.Version2 {
-		for _, a := range hh.hostinfo.vpnAddrs {
-			if a.Is6() {
-				v = cert.Version2
-				break
-			}
-		}
+	}
+	if v != cert.Version3 {
+		hm.f.l.Error("Unable to handshake with host because only v3 certificates are supported",
+			"vpnAddrs", hh.hostinfo.vpnAddrs, "certVersion", v)
+		return false
 	}
 
 	cred := cs.GetCredential(v)

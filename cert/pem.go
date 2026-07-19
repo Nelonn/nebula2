@@ -63,8 +63,6 @@ func SplitPEM(data []byte, atEOF bool) (advance int, token []byte, err error) {
 }
 
 const ( //cert banners
-	CertificateBanner   = "NEBULA CERTIFICATE"
-	CertificateV2Banner = "NEBULA CERTIFICATE V2"
 	CertificateV3Banner = "NEBULA CERTIFICATE V3"
 )
 
@@ -111,10 +109,6 @@ func UnmarshalCertificateFromPEM(b []byte) (Certificate, []byte, error) {
 func unmarshalCertificateBlock(block *pem.Block) (Certificate, error) {
 	switch block.Type {
 	// Implementations must validate the resulting certificate contains valid information
-	case CertificateBanner:
-		return unmarshalCertificateV1(block.Bytes, nil)
-	case CertificateV2Banner:
-		return unmarshalCertificateV2(block.Bytes, nil, Curve_CURVE25519)
 	case CertificateV3Banner:
 		return unmarshalCertificateV3(block.Bytes, nil, Curve_CURVE25519)
 	default:

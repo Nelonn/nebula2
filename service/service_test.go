@@ -23,7 +23,11 @@ import (
 type m = map[string]any
 
 func newSimpleService(caCrt cert.Certificate, caKey []byte, name string, udpIp netip.Addr, overrides m) *Service {
-	_, _, myPrivKey, myPEM := cert_test.NewTestCert(cert.Version2, cert.Curve_CURVE25519, caCrt, caKey, "a", time.Now(), time.Now().Add(5*time.Minute), []netip.Prefix{netip.PrefixFrom(udpIp, 24)}, nil, []string{})
+	_, _, myPrivKey, myPEM := cert_test.NewTestCert(cert.Version3, cert.Curve_CURVE25519, caCrt, caKey, "a", time.Now(), time.Now().Add(5*time.Minute), []netip.Prefix{netip.PrefixFrom(udpIp, 24)}, nil, []string{})
+	hpkePriv, _, _, err := cert.UnmarshalPrivateKeyFromPEM(myPrivKey)
+	if err != nil {
+		panic(err)
+	}
 	caB, err := caCrt.MarshalPEM()
 	if err != nil {
 		panic(err)
@@ -34,7 +38,8 @@ func newSimpleService(caCrt cert.Certificate, caKey []byte, name string, udpIp n
 			"ca":                 string(caB),
 			"cert":               string(myPEM),
 			"key":                string(myPrivKey),
-			"initiating_version": 2,
+			"hpke_key":           string(cert.MarshalHPKEPrivateKeyToPEM(hpkePriv, false)),
+			"initiating_version": 3,
 		},
 		//"tun": m{"disabled": true},
 		"firewall": m{
@@ -92,7 +97,7 @@ func newSimpleService(caCrt cert.Certificate, caKey []byte, name string, udpIp n
 
 func TestService(t *testing.T) {
 	t.Skip("HPKE v3-only: service integration test needs v3 certs with HPKE keys")
-	ca, _, caKey, _ := cert_test.NewTestCaCert(cert.Version2, cert.Curve_CURVE25519, time.Now(), time.Now().Add(10*time.Minute), nil, nil, []string{})
+	ca, _, caKey, _ := cert_test.NewTestCaCert(cert.Version3, cert.Curve_CURVE25519, time.Now(), time.Now().Add(10*time.Minute), nil, nil, []string{})
 	a := newSimpleService(ca, caKey, "a", netip.MustParseAddr("10.0.0.1"), m{
 		"static_host_map": m{},
 		"lighthouse": m{

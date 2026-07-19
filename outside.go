@@ -186,24 +186,14 @@ func (f *Interface) processRelayInner(via ViaSender, outerHI *HostInfo, outerRel
 
 	switch relay.Type {
 	case TerminalType:
-		var innerDecHdr [16]byte
-		if block := f.pki.HeaderBlock(); block != nil {
-			block.Decrypt(innerDecHdr[:], innerPacket[:16])
-		} else {
-			return
-		}
-		innerSessionID := binary.BigEndian.Uint32(innerDecHdr[0:4])
-		innerHI := f.hostMap.QueryIndex(innerSessionID)
-		if innerHI == nil || innerHI.ConnectionState == nil {
-			return
-		}
 		relayedVia := ViaSender{
 			UdpAddr:   via.UdpAddr,
 			relayHI:   outerHI,
 			relay:     relay,
 			IsRelayed: true,
 		}
-		f.processDataPacketV2(relayedVia, innerHI, innerPacket, innerDecHdr, nb, out, lhf, fwPacket, q, localCache)
+		var innerHeader header.H
+		f.readOutsidePackets(relayedVia, out, innerPacket, &innerHeader, fwPacket, lhf, nb, q, localCache)
 	case ForwardingType:
 		targetHI, targetRelay, err := f.hostMap.QueryVpnAddrsRelayFor(outerHI.vpnAddrs, relay.PeerAddr)
 		if err != nil || targetRelay.State != Established {

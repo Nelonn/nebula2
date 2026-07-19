@@ -18,10 +18,10 @@ import (
 )
 
 func assertTestRequestEchoed(t *testing.T, cipher string) {
-	ca, _, caKey, _ := cert_test.NewTestCaCert(cert.Version1, cert.Curve_CURVE25519, time.Now(), time.Now().Add(10*time.Minute), nil, nil, []string{})
+	ca, _, caKey, _ := cert_test.NewTestCaCert(cert.Version3, cert.Curve_CURVE25519, time.Now(), time.Now().Add(10*time.Minute), nil, nil, []string{})
 	over := m{"cipher": cipher}
-	a, aNet, aUdp, _ := newSimpleServer(cert.Version1, ca, caKey, "a", "10.128.0.1/24", over)
-	b, bNet, bUdp, _ := newSimpleServer(cert.Version1, ca, caKey, "b", "10.128.0.2/24", over)
+	a, aNet, aUdp, _ := newSimpleServer(cert.Version3, ca, caKey, "a", "10.128.0.1/24", over)
+	b, bNet, bUdp, _ := newSimpleServer(cert.Version3, ca, caKey, "b", "10.128.0.2/24", over)
 
 	a.InjectLightHouseAddr(bNet[0].Addr(), bUdp)
 	b.InjectLightHouseAddr(aNet[0].Addr(), aUdp)

@@ -32,10 +32,9 @@ func Test_emitStats_primesGauges(t *testing.T) {
 
 	notAfter := time.Now().Add(time.Hour)
 	cs := &CertState{
-		initiatingVersion: cert.Version1,
+		initiatingVersion: cert.Version3,
 		privateKey:        []byte{},
-		v1Cert:            &dummyCert{version: cert.Version1, notAfter: notAfter},
-		v1Credential:      nil,
+		v3Cert:            &dummyCert{version: cert.Version3, notAfter: notAfter},
 	}
 
 	lh := newTestLighthouse()
@@ -68,6 +67,6 @@ func Test_emitStats_primesGauges(t *testing.T) {
 	ttl := ttlGauge.Value()
 	assert.Positive(t, ttl, "ttl gauge should be primed by emitStats before its first tick")
 	assert.LessOrEqual(t, ttl, int64(3600))
-	assert.Equal(t, int64(cert.Version1), metrics.GetOrRegisterGauge("certificate.initiating_version", nil).Value())
-	assert.Equal(t, int64(cert.Version1), metrics.GetOrRegisterGauge("certificate.max_version", nil).Value())
+	assert.Equal(t, int64(cert.Version3), metrics.GetOrRegisterGauge("certificate.initiating_version", nil).Value())
+	assert.Equal(t, int64(cert.Version3), metrics.GetOrRegisterGauge("certificate.max_version", nil).Value())
 }

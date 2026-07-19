@@ -105,6 +105,10 @@ func newSimpleServerWithUdpAndUnsafeNetworks(v cert.Version, caCrt cert.Certific
 	}
 
 	_, _, myPrivKey, myPEM := cert_test.NewTestCert(v, cert.Curve_CURVE25519, caCrt, caKey, name, time.Now(), time.Now().Add(5*time.Minute), vpnNetworks, unsafeNetworks, []string{})
+	hpkePriv, _, _, err := cert.UnmarshalPrivateKeyFromPEM(myPrivKey)
+	if err != nil {
+		panic(err)
+	}
 
 	caB, err := caCrt.MarshalPEM()
 	if err != nil {
@@ -116,6 +120,7 @@ func newSimpleServerWithUdpAndUnsafeNetworks(v cert.Version, caCrt cert.Certific
 			"ca":   string(caB),
 			"cert": string(myPEM),
 			"key":  string(myPrivKey),
+			"hpke_key": string(cert.MarshalHPKEPrivateKeyToPEM(hpkePriv, false)),
 		},
 		//"tun": m{"disabled": true},
 		"firewall": m{

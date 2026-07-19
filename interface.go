@@ -15,7 +15,6 @@ import (
 	"github.com/gaissmai/bart"
 	"github.com/rcrowley/go-metrics"
 
-	"github.com/slackhq/nebula/cert"
 	"github.com/slackhq/nebula/config"
 	"github.com/slackhq/nebula/firewall"
 	"github.com/slackhq/nebula/header"
@@ -385,10 +384,7 @@ func (f *Interface) reloadDisconnectInvalid(c *config.C) {
 
 func (f *Interface) reloadFirewall(c *config.C) {
 	cs := f.pki.getCertState()
-	curCert := cs.getCertificate(cert.Version2)
-	if curCert == nil {
-		curCert = cs.getCertificate(cert.Version1)
-	}
+	curCert := cs.GetDefaultCertificate()
 
 	// The firewall builds its routableNetworks set from the certificate's UnsafeNetworks at construction.
 	// Check to see if that set has changed, and if so, rebuild the firewall.
@@ -520,10 +516,8 @@ func (f *Interface) emitStats(ctx context.Context, i time.Duration) {
 		certInitiatingVersion.Update(int64(defaultCrt.Version()))
 
 		// Report the max certificate version we are capable of using
-		if certState.v2Cert != nil {
-			certMaxVersion.Update(int64(certState.v2Cert.Version()))
-		} else {
-			certMaxVersion.Update(int64(certState.v1Cert.Version()))
+		if certState.v3Cert != nil {
+			certMaxVersion.Update(int64(certState.v3Cert.Version()))
 		}
 	}
 

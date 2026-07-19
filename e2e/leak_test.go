@@ -23,9 +23,9 @@ import (
 func TestNoGoroutineLeaks(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
-	ca, _, caKey, _ := cert_test.NewTestCaCert(cert.Version1, cert.Curve_CURVE25519, time.Now(), time.Now().Add(10*time.Minute), nil, nil, []string{})
-	myControl, myVpnIpNet, myUdpAddr, _ := newSimpleServer(cert.Version1, ca, caKey, "me", "10.128.0.1/24", nil)
-	theirControl, theirVpnIpNet, theirUdpAddr, _ := newSimpleServer(cert.Version1, ca, caKey, "them", "10.128.0.2/24", nil)
+	ca, _, caKey, _ := cert_test.NewTestCaCert(cert.Version3, cert.Curve_CURVE25519, time.Now(), time.Now().Add(10*time.Minute), nil, nil, []string{})
+	myControl, myVpnIpNet, myUdpAddr, _ := newSimpleServer(cert.Version3, ca, caKey, "me", "10.128.0.1/24", nil)
+	theirControl, theirVpnIpNet, theirUdpAddr, _ := newSimpleServer(cert.Version3, ca, caKey, "them", "10.128.0.2/24", nil)
 
 	myControl.InjectLightHouseAddr(theirVpnIpNet[0].Addr(), theirUdpAddr)
 	theirControl.InjectLightHouseAddr(myVpnIpNet[0].Addr(), myUdpAddr)

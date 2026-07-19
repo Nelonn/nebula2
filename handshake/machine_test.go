@@ -16,7 +16,7 @@ import (
 
 func TestHPKEHappyPath(t *testing.T) {
 	ca, _, caKey, _ := ct.NewTestCaCert(
-		cert.Version2, cert.Curve_CURVE25519, time.Time{}, time.Time{}, nil, nil, nil,
+		cert.Version3, cert.Curve_CURVE25519, time.Time{}, time.Time{}, nil, nil, nil,
 	)
 	caPool := ct.NewTestCAPool(ca)
 
@@ -68,7 +68,7 @@ func TestHPKEHappyPath(t *testing.T) {
 
 func TestHPKEWithAESCipher(t *testing.T) {
 	ca, _, caKey, _ := ct.NewTestCaCert(
-		cert.Version2, cert.Curve_CURVE25519, time.Time{}, time.Time{}, nil, nil, nil,
+		cert.Version3, cert.Curve_CURVE25519, time.Time{}, time.Time{}, nil, nil, nil,
 	)
 	caPool := ct.NewTestCAPool(ca)
 
@@ -92,7 +92,7 @@ func TestHPKEWithAESCipher(t *testing.T) {
 func TestHPKEKeyDerivation(t *testing.T) {
 	// Verify both sides derive identical data plane keys
 	ca, _, caKey, _ := ct.NewTestCaCert(
-		cert.Version2, cert.Curve_CURVE25519, time.Time{}, time.Time{}, nil, nil, nil,
+		cert.Version3, cert.Curve_CURVE25519, time.Time{}, time.Time{}, nil, nil, nil,
 	)
 	caPool := ct.NewTestCAPool(ca)
 
@@ -117,7 +117,7 @@ func TestHPKEKeyDerivation(t *testing.T) {
 
 func TestHPKEInitiateErrors(t *testing.T) {
 	ca, _, caKey, _ := ct.NewTestCaCert(
-		cert.Version2, cert.Curve_CURVE25519, time.Time{}, time.Time{}, nil, nil, nil,
+		cert.Version3, cert.Curve_CURVE25519, time.Time{}, time.Time{}, nil, nil, nil,
 	)
 	caPool := ct.NewTestCAPool(ca)
 	peer := newTestPeer(t, ca, caKey, "test", []netip.Prefix{netip.MustParsePrefix("10.0.0.1/24")})
@@ -158,7 +158,7 @@ func TestHPKEInitiateErrors(t *testing.T) {
 
 func TestHPKEProcessPacketErrors(t *testing.T) {
 	ca, _, caKey, _ := ct.NewTestCaCert(
-		cert.Version2, cert.Curve_CURVE25519, time.Time{}, time.Time{}, nil, nil, nil,
+		cert.Version3, cert.Curve_CURVE25519, time.Time{}, time.Time{}, nil, nil, nil,
 	)
 	caPool := ct.NewTestCAPool(ca)
 	peer := newTestPeer(t, ca, caKey, "test", []netip.Prefix{netip.MustParsePrefix("10.0.0.1/24")})
@@ -173,7 +173,7 @@ func TestHPKEProcessPacketErrors(t *testing.T) {
 
 	t.Run("invalid cert is fatal", func(t *testing.T) {
 		otherCA, _, otherCAKey, _ := ct.NewTestCaCert(
-			cert.Version2, cert.Curve_CURVE25519, time.Time{}, time.Time{}, nil, nil, nil,
+			cert.Version3, cert.Curve_CURVE25519, time.Time{}, time.Time{}, nil, nil, nil,
 		)
 		otherPeer := newTestPeer(t, otherCA, otherCAKey, "other", []netip.Prefix{netip.MustParsePrefix("10.0.0.2/24")})
 
@@ -198,14 +198,14 @@ func TestHPKEProcessPacketErrors(t *testing.T) {
 
 func TestHPKEExpiredCert(t *testing.T) {
 	ca, _, caKey, _ := ct.NewTestCaCert(
-		cert.Version2, cert.Curve_CURVE25519,
+		cert.Version3, cert.Curve_CURVE25519,
 		time.Now().Add(-24*time.Hour), time.Now().Add(24*time.Hour),
 		nil, nil, nil,
 	)
 	caPool := ct.NewTestCAPool(ca)
 
 	expCert, _, _, _ := ct.NewTestCert(
-		cert.Version2, cert.Curve_CURVE25519, ca, caKey,
+		cert.Version3, cert.Curve_CURVE25519, ca, caKey,
 		"expired", time.Now().Add(-2*time.Hour), time.Now().Add(-1*time.Hour),
 		[]netip.Prefix{netip.MustParsePrefix("10.0.0.1/24")}, nil, nil,
 	)
@@ -217,11 +217,11 @@ func TestHPKEExpiredCert(t *testing.T) {
 	require.NoError(t, err)
 
 	expiredPeer := &testPeer{
-		version:  cert.Version2,
+		version:  cert.Version3,
 		hpkePub:  expHPKEPub,
 		hpkePriv: expHPKEPriv,
 		creds: map[cert.Version]*Credential{
-			cert.Version2: NewCredential(expCert, expHsBytes, expHPKEPriv, expHPKEPub, ncs, hSuite),
+			cert.Version3: NewCredential(expCert, expHsBytes, expHPKEPriv, expHPKEPub, ncs, hSuite),
 		},
 	}
 
@@ -241,7 +241,7 @@ func TestHPKEExpiredCert(t *testing.T) {
 func TestHPKEMsg2Prefix(t *testing.T) {
 	// Verify msg2 has initiator_index prefix
 	ca, _, caKey, _ := ct.NewTestCaCert(
-		cert.Version2, cert.Curve_CURVE25519, time.Time{}, time.Time{}, nil, nil, nil,
+		cert.Version3, cert.Curve_CURVE25519, time.Time{}, time.Time{}, nil, nil, nil,
 	)
 	caPool := ct.NewTestCAPool(ca)
 	v := testVerifier(caPool)
@@ -272,7 +272,7 @@ func TestHPKEMsg2Prefix(t *testing.T) {
 
 func TestHPKEMessageIndexTracking(t *testing.T) {
 	ca, _, caKey, _ := ct.NewTestCaCert(
-		cert.Version2, cert.Curve_CURVE25519, time.Time{}, time.Time{}, nil, nil, nil,
+		cert.Version3, cert.Curve_CURVE25519, time.Time{}, time.Time{}, nil, nil, nil,
 	)
 	caPool := ct.NewTestCAPool(ca)
 	v := testVerifier(caPool)
@@ -303,7 +303,7 @@ func TestHPKEMessageIndexTracking(t *testing.T) {
 
 func TestHPKEBufferReuse(t *testing.T) {
 	ca, _, caKey, _ := ct.NewTestCaCert(
-		cert.Version2, cert.Curve_CURVE25519, time.Time{}, time.Time{}, nil, nil, nil,
+		cert.Version3, cert.Curve_CURVE25519, time.Time{}, time.Time{}, nil, nil, nil,
 	)
 	caPool := ct.NewTestCAPool(ca)
 	initPeer := newTestPeer(t, ca, caKey, "init", []netip.Prefix{netip.MustParsePrefix("10.0.0.1/24")})
@@ -359,7 +359,7 @@ func TestHPKEBufferReuse(t *testing.T) {
 
 func TestHPKEResultFields(t *testing.T) {
 	ca, _, caKey, _ := ct.NewTestCaCert(
-		cert.Version2, cert.Curve_CURVE25519, time.Time{}, time.Time{}, nil, nil, nil,
+		cert.Version3, cert.Curve_CURVE25519, time.Time{}, time.Time{}, nil, nil, nil,
 	)
 	caPool := ct.NewTestCAPool(ca)
 
@@ -378,7 +378,7 @@ func TestHPKEResultFields(t *testing.T) {
 
 func TestHPKEMachineProcessPayload(t *testing.T) {
 	ca, _, caKey, _ := ct.NewTestCaCert(
-		cert.Version2, cert.Curve_CURVE25519, time.Time{}, time.Time{}, nil, nil, nil,
+		cert.Version3, cert.Curve_CURVE25519, time.Time{}, time.Time{}, nil, nil, nil,
 	)
 	caPool := ct.NewTestCAPool(ca)
 	peer := newTestPeer(t, ca, caKey, "test", []netip.Prefix{netip.MustParsePrefix("10.0.0.1/24")})
@@ -416,7 +416,7 @@ func TestHPKEMachineProcessPayload(t *testing.T) {
 
 	t.Run("zero initiator index on responder is fatal", func(t *testing.T) {
 		m := newTestMachine(t, peer, v, false, 100)
-		p := Payload{Cert: []byte{1}, CertVersion: 2, InitiatorIndex: 0, Time: 1}
+		p := Payload{Cert: []byte{1}, CertVersion: 3, InitiatorIndex: 0, Time: 1}
 		b := MarshalPayload(nil, p)
 		err := m.processPayload(b, msgFlags{expectsPayload: true, expectsCert: true})
 		require.ErrorIs(t, err, ErrInvalidRemoteIndex)
@@ -426,7 +426,7 @@ func TestHPKEMachineProcessPayload(t *testing.T) {
 
 func TestHPKERequireComplete(t *testing.T) {
 	ca, _, caKey, _ := ct.NewTestCaCert(
-		cert.Version2, cert.Curve_CURVE25519, time.Time{}, time.Time{}, nil, nil, nil,
+		cert.Version3, cert.Curve_CURVE25519, time.Time{}, time.Time{}, nil, nil, nil,
 	)
 	caPool := ct.NewTestCAPool(ca)
 	peer := newTestPeer(t, ca, caKey, "test", []netip.Prefix{netip.MustParsePrefix("10.0.0.1/24")})
@@ -467,7 +467,7 @@ func TestHPKERequireComplete(t *testing.T) {
 
 func TestHPKEDecryptionRecovery(t *testing.T) {
 	ca, _, caKey, _ := ct.NewTestCaCert(
-		cert.Version2, cert.Curve_CURVE25519, time.Time{}, time.Time{}, nil, nil, nil,
+		cert.Version3, cert.Curve_CURVE25519, time.Time{}, time.Time{}, nil, nil, nil,
 	)
 	caPool := ct.NewTestCAPool(ca)
 	v := testVerifier(caPool)

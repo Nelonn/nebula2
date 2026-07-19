@@ -230,7 +230,7 @@ func NewTestCaCert(name string, pubKey, privKey []byte, before, after time.Time,
 	}
 
 	t := &cert.TBSCertificate{
-		Version:        cert.Version1,
+		Version:        cert.Version3,
 		Name:           name,
 		NotBefore:      time.Unix(before.Unix(), 0),
 		NotAfter:       time.Unix(after.Unix(), 0),
@@ -263,8 +263,12 @@ func NewTestCert(ca cert.Certificate, signerKey []byte, name string, before, aft
 	}
 
 	pub, rawPriv := x25519Keypair()
+	hpkePub, _, err := cert.GenerateHPKEKeyPair(false)
+	if err != nil {
+		panic(err)
+	}
 	nc := &cert.TBSCertificate{
-		Version:        cert.Version1,
+		Version:        cert.Version3,
 		Name:           name,
 		Networks:       networks,
 		UnsafeNetworks: unsafeNetworks,
@@ -272,6 +276,7 @@ func NewTestCert(ca cert.Certificate, signerKey []byte, name string, before, aft
 		NotBefore:      time.Unix(before.Unix(), 0),
 		NotAfter:       time.Unix(after.Unix(), 0),
 		PublicKey:      pub,
+		HPKEPublicKey:  hpkePub,
 		IsCA:           false,
 	}
 

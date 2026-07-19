@@ -62,7 +62,7 @@ func buildCABundle(b *testing.B, count int) (cert.Certificate, []byte, []byte) {
 	after := time.Now().Add(24 * time.Hour)
 
 	ca, _, caKey, pem := cert_test.NewTestCaCert(
-		cert.Version2,
+		cert.Version3,
 		cert.Curve_CURVE25519,
 		before,
 		after,
@@ -76,7 +76,7 @@ func buildCABundle(b *testing.B, count int) (cert.Certificate, []byte, []byte) {
 
 	for i := 1; i < count; i++ {
 		_, _, _, extraPEM := cert_test.NewTestCaCert(
-			cert.Version2,
+			cert.Version3,
 			cert.Curve_CURVE25519,
 			time.Now(),
 			time.Now().Add(time.Hour),
@@ -97,7 +97,7 @@ func writePKIFiles(b *testing.B, dir string, ca cert.Certificate, caKey []byte, 
 	networks := []netip.Prefix{netip.MustParsePrefix("10.0.0.1/24")}
 
 	_, _, keyPEM, certPEM := cert_test.NewTestCert(
-		cert.Version2,
+		cert.Version3,
 		cert.Curve_CURVE25519,
 		ca,
 		caKey,

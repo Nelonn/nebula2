@@ -132,13 +132,11 @@ func alwaysAllowV4(netip.Addr, *V4AddrPort) bool { return true }
 func alwaysAllowV6(netip.Addr, *V6AddrPort) bool { return true }
 
 // TestGetRelays_SkipsNilRelayAddrs proves GetRelays tolerates nil entries in the
-// RelayVpnAddrs proto slice (which protoAddrToNetAddr would nil-deref on) and still
-// returns the valid relays, including the legacy OldRelayVpnAddrs.
+// RelayVpnAddrs proto slice, which protoAddrToNetAddr would nil-deref on.
 func TestGetRelays_SkipsNilRelayAddrs(t *testing.T) {
 	good := netip.MustParseAddr("10.0.0.9")
 
 	d := &NebulaMetaDetails{
-		OldRelayVpnAddrs: []uint32{0x0a000001}, // 10.0.0.1
 		RelayVpnAddrs: []*Addr{
 			nil,
 			netAddrToProtoAddr(good),
@@ -150,7 +148,6 @@ func TestGetRelays_SkipsNilRelayAddrs(t *testing.T) {
 	require.NotPanics(t, func() { relays = d.GetRelays() })
 
 	assert.Equal(t, []netip.Addr{
-		netip.MustParseAddr("10.0.0.1"),
 		good,
 	}, relays)
 }

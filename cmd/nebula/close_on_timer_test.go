@@ -32,16 +32,21 @@ func TestControlStopClosesOnTimer(t *testing.T) {
 
 	before := time.Now().Add(-time.Hour)
 	after := time.Now().Add(time.Hour)
-	ca, _, caKey, caPEM := cert_test.NewTestCaCert(cert.Version2, cert.Curve_CURVE25519, before, after, nil, nil, nil)
+	ca, _, caKey, caPEM := cert_test.NewTestCaCert(cert.Version3, cert.Curve_CURVE25519, before, after, nil, nil, nil)
 	networks := []netip.Prefix{netip.MustParsePrefix("10.0.0.1/24")}
-	_, _, keyPEM, certPEM := cert_test.NewTestCert(cert.Version2, cert.Curve_CURVE25519, ca, caKey, "close-on-timer", before, after, networks, nil, nil)
+	_, _, keyPEM, certPEM := cert_test.NewTestCert(cert.Version3, cert.Curve_CURVE25519, ca, caKey, "close-on-timer", before, after, networks, nil, nil)
+	hpkePriv, _, _, err := cert.UnmarshalPrivateKeyFromPEM(keyPEM)
+	require.NoError(t, err)
+	hpkeKeyPEM := cert.MarshalHPKEPrivateKeyToPEM(hpkePriv, false)
 
 	caPath := filepath.Join(dir, "ca.pem")
 	certPath := filepath.Join(dir, "cert.pem")
 	keyPath := filepath.Join(dir, "key.pem")
+	hpkeKeyPath := filepath.Join(dir, "hpke-key.pem")
 	require.NoError(t, os.WriteFile(caPath, caPEM, 0o600))
 	require.NoError(t, os.WriteFile(certPath, certPEM, 0o600))
 	require.NoError(t, os.WriteFile(keyPath, keyPEM, 0o600))
+	require.NoError(t, os.WriteFile(hpkeKeyPath, hpkeKeyPEM, 0o600))
 
 	// tun disabled so no device/root is needed; routines: 2 so we exercise the
 	// multi-socket (SO_REUSEPORT) teardown, which is where dnclient runs.
@@ -50,6 +55,7 @@ pki:
   ca: %s
   cert: %s
   key: %s
+  hpke_key: %s
 listen:
   host: 127.0.0.1
   port: 0
@@ -65,7 +71,7 @@ firewall:
       proto: any
       host: any
 routines: 2
-`, caPath, certPath, keyPath)
+`, caPath, certPath, keyPath, hpkeKeyPath)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yml"), []byte(configBody), 0o600))
 
 	c := config.NewC(l)

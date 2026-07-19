@@ -239,15 +239,12 @@ bench-cpu-long:
 	go test -bench=. -benchtime=60s -cpuprofile=cpu.pprof
 	go tool pprof go-audit.test cpu.pprof
 
-proto: nebula.pb.go cert/cert_v1.pb.go
+proto: nebula.pb.go
 
 nebula.pb.go: nebula.proto .FORCE
 	go build github.com/gogo/protobuf/protoc-gen-gogofaster
 	PATH="$(CURDIR):$(PATH)" protoc --gogofaster_out=paths=source_relative:. $<
 	rm protoc-gen-gogofaster
-
-cert/cert.pb.go: cert/cert.proto .FORCE
-	$(MAKE) -C cert cert.pb.go
 
 service:
 	@echo > $(NULL_FILE)

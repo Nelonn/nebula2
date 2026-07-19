@@ -3,7 +3,6 @@ package nebula
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"fmt"
 	"log/slog"
 	"net/netip"
@@ -268,29 +267,12 @@ func (cm *connectionManager) migrateRelayUsed(oldhostinfo, newhostinfo *HostInfo
 			InitiatorRelayIndex: index,
 		}
 
-		switch newhostinfo.GetCert().Certificate.Version() {
-		case cert.Version1:
-			if !relayFrom.Is4() {
-				cm.l.Error("can not migrate v1 relay with a v6 network because the relay is not running a current nebula version")
-				continue
-			}
-
-			if !relayTo.Is4() {
-				cm.l.Error("can not migrate v1 relay with a v6 remote network because the relay is not running a current nebula version")
-				continue
-			}
-
-			b := relayFrom.As4()
-			req.OldRelayFromAddr = binary.BigEndian.Uint32(b[:])
-			b = relayTo.As4()
-			req.OldRelayToAddr = binary.BigEndian.Uint32(b[:])
-		case cert.Version2:
-			req.RelayFromAddr = netAddrToProtoAddr(relayFrom)
-			req.RelayToAddr = netAddrToProtoAddr(relayTo)
-		default:
-			newhostinfo.logger(cm.l).Error("Unknown certificate version found while attempting to migrate relay")
+		if newhostinfo.GetCert().Certificate.Version() != cert.Version3 {
+			newhostinfo.logger(cm.l).Error("Unsupported certificate version found while attempting to migrate relay", "version", newhostinfo.GetCert().Certificate.Version())
 			continue
 		}
+		req.RelayFromAddr = netAddrToProtoAddr(relayFrom)
+		req.RelayToAddr = netAddrToProtoAddr(relayTo)
 
 		msg, err := req.Marshal()
 		if err != nil {

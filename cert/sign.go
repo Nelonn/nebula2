@@ -103,18 +103,6 @@ func (t *TBSCertificate) SignWith(signer Certificate, curve Curve, sp SignerLamb
 
 	var c beingSignedCertificate
 	switch t.Version {
-	case Version1:
-		c = &certificateV1{}
-		err := c.fromTBSCertificate(t)
-		if err != nil {
-			return nil, err
-		}
-	case Version2:
-		c = &certificateV2{}
-		err := c.fromTBSCertificate(t)
-		if err != nil {
-			return nil, err
-		}
 	case Version3:
 		c = &certificateV3{}
 		err := c.fromTBSCertificate(t)

@@ -193,10 +193,7 @@ func NewFirewall(l *slog.Logger, tcpTimeout, UDPTimeout, defaultTimeout time.Dur
 }
 
 func NewFirewallFromConfig(l *slog.Logger, cs *CertState, c *config.C) (*Firewall, error) {
-	certificate := cs.getCertificate(cert.Version2)
-	if certificate == nil {
-		certificate = cs.getCertificate(cert.Version1)
-	}
+	certificate := cs.GetDefaultCertificate()
 
 	if certificate == nil {
 		panic("No certificate available to reconfigure the firewall")

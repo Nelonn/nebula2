@@ -22,12 +22,12 @@ func TestReloadFirewall_CertUnsafeNetworksChanged(t *testing.T) {
 
 	// dummyCert avoids dragging the real signing pipeline into a unit test.
 	c1 := &dummyCert{
-		version:        cert.Version2,
+		version:        cert.Version3,
 		networks:       []netip.Prefix{vpnNet},
 		unsafeNetworks: initialUnsafe,
 	}
 	pki := &PKI{}
-	pki.cs.Store(&CertState{v2Cert: c1, initiatingVersion: cert.Version2})
+	pki.cs.Store(&CertState{v3Cert: c1, initiatingVersion: cert.Version3})
 
 	rawYAML := `firewall:
   outbound:
@@ -58,11 +58,11 @@ func TestReloadFirewall_CertUnsafeNetworksChanged(t *testing.T) {
 		netip.MustParsePrefix("203.0.113.0/24"),
 	}
 	c2 := &dummyCert{
-		version:        cert.Version2,
+		version:        cert.Version3,
 		networks:       []netip.Prefix{vpnNet},
 		unsafeNetworks: newUnsafe,
 	}
-	pki.cs.Store(&CertState{v2Cert: c2, initiatingVersion: cert.Version2})
+	pki.cs.Store(&CertState{v3Cert: c2, initiatingVersion: cert.Version3})
 
 	// Reload with the same YAML so HasChanged("firewall") reports false.
 	require.NoError(t, cfg.ReloadConfigString(rawYAML))
@@ -84,12 +84,12 @@ func TestReloadFirewall_NoChange(t *testing.T) {
 	unsafe := []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24")}
 
 	c1 := &dummyCert{
-		version:        cert.Version2,
+		version:        cert.Version3,
 		networks:       []netip.Prefix{vpnNet},
 		unsafeNetworks: unsafe,
 	}
 	pki := &PKI{}
-	pki.cs.Store(&CertState{v2Cert: c1, initiatingVersion: cert.Version2})
+	pki.cs.Store(&CertState{v3Cert: c1, initiatingVersion: cert.Version3})
 
 	rawYAML := `firewall:
   outbound:

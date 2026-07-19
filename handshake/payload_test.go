@@ -14,7 +14,7 @@ func TestPayloadRoundTrip(t *testing.T) {
 	t.Run("all fields set", func(t *testing.T) {
 		data := MarshalPayload(nil, Payload{
 			Cert:           []byte("test-cert-bytes"),
-			CertVersion:    2,
+			CertVersion:    3,
 			InitiatorIndex: 12345,
 			ResponderIndex: 67890,
 			Time:           1234567890,
@@ -27,7 +27,7 @@ func TestPayloadRoundTrip(t *testing.T) {
 		assert.Equal(t, uint32(12345), got.InitiatorIndex)
 		assert.Equal(t, uint32(67890), got.ResponderIndex)
 		assert.Equal(t, uint64(1234567890), got.Time)
-		assert.Equal(t, uint32(2), got.CertVersion)
+		assert.Equal(t, uint32(3), got.CertVersion)
 	})
 
 	t.Run("minimal fields", func(t *testing.T) {
@@ -59,7 +59,7 @@ func TestPayloadRoundTrip(t *testing.T) {
 
 		data := MarshalPayload(nil, Payload{
 			Cert:           bigCert,
-			CertVersion:    2,
+			CertVersion:    3,
 			InitiatorIndex: 999,
 		})
 
@@ -141,7 +141,7 @@ func TestPayloadBytesConsumed(t *testing.T) {
 	t.Run("all bytes consumed on valid input", func(t *testing.T) {
 		original := Payload{
 			Cert:           []byte("cert"),
-			CertVersion:    2,
+			CertVersion:    3,
 			InitiatorIndex: 100,
 			ResponderIndex: 200,
 			Time:           999,
@@ -319,14 +319,14 @@ func TestPayloadUnmarshalErrors(t *testing.T) {
 func FuzzPayload(f *testing.F) {
 	// Seed corpus with a handful of known-good shapes.
 	f.Add(MarshalPayload(nil, Payload{}))
-	f.Add(MarshalPayload(nil, Payload{Cert: []byte{1, 2, 3}, CertVersion: 2}))
+	f.Add(MarshalPayload(nil, Payload{Cert: []byte{1, 2, 3}, CertVersion: 3}))
 	f.Add(MarshalPayload(nil, Payload{InitiatorIndex: 42, Time: 1}))
 	f.Add(MarshalPayload(nil, Payload{
 		Cert:           []byte("seed-cert"),
 		InitiatorIndex: 1,
 		ResponderIndex: 2,
 		Time:           3,
-		CertVersion:    2,
+		CertVersion:    3,
 	}))
 	f.Add([]byte{})
 	f.Add([]byte{0xff})
