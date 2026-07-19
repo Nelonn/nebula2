@@ -99,7 +99,7 @@ Once you have launched an instance, ensure that Nebula udp traffic (default port
 ./nebula-cert ca -name "Myorganization, Inc"
 ```
 
-This will create files named `ca.key` and `ca.cert` in the current directory. The `ca.key` file is the most sensitive file you'll create, because it is the key used to sign the certificates for individual nebula nodes/hosts. Please store this file somewhere safe, preferably with strong encryption.
+This will create files named `ca.key` and `ca.crt` in the current directory. The `ca.key` file is the most sensitive file you'll create, because it is the key used to sign the certificates for individual nebula nodes/hosts. Please store this file somewhere safe, preferably with strong encryption.
 
 **Be aware!** By default, certificate authorities have a 1-year lifetime before expiration. See [this guide](https://nebula.defined.net/docs/guides/rotating-certificate-authority/) for details on rotating a CA.
 
@@ -113,7 +113,7 @@ This assumes you have four nodes, named lighthouse1, laptop, server1, host3. You
 ./nebula-cert sign -name "host3" -ip "192.168.100.10/24"
 ```
 
-By default, host certificates will expire 1 second before the CA expires. Use the `-duration` flag to specify a shorter lifetime.
+Each sign command creates `{host}.crt`, `{host}.key`, and `{host}.hpke.key`. By default, host certificates will expire 1 second before the CA expires. Use the `-duration` flag to specify a shorter lifetime.
 
 #### 5. Configuration files for each host
 
@@ -123,10 +123,11 @@ Download a copy of the nebula [example configuration](https://github.com/slackhq
 
 * On the individual hosts, ensure the lighthouse is defined properly in the `static_host_map` section, and is added to the lighthouse `hosts` section.
 
+* Configure `pki.hpke_key` with the host's `{host}.hpke.key`. Hosts that initiate directly to a lighthouse or other static peer also need that peer certificate in `pki.peer_certs` so the first HPKE handshake can be encrypted.
 
 #### 6. Copy nebula credentials, configuration, and binaries to each host
 
-For each host, copy the nebula binary to the host, along with `config.yml` from step 5, and the files `ca.crt`, `{host}.crt`, and `{host}.key` from step 4.
+For each host, copy the nebula binary to the host, along with `config.yml` from step 5, and the files `ca.crt`, `{host}.crt`, `{host}.key`, and `{host}.hpke.key` from step 4.
 
 **DO NOT COPY `ca.key` TO INDIVIDUAL NODES.**
 

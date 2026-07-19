@@ -47,7 +47,7 @@ type signFlags struct {
 func newSignFlags() *signFlags {
 	sf := signFlags{set: flag.NewFlagSet("sign", flag.ContinueOnError)}
 	sf.set.Usage = func() {}
-	sf.version = sf.set.Uint("version", 0, "Optional: version of the certificate format to use (1, 2, or 3). The default is to match the version of the signing CA")
+	sf.version = sf.set.Uint("version", 0, "Optional: version of the certificate format to use. Only version 3 is supported")
 	sf.caKeyPath = sf.set.String("ca-key", "ca.key", "Optional: path to the signing CA key")
 	sf.caCertPath = sf.set.String("ca-crt", "ca.crt", "Optional: path to the signing CA cert")
 	sf.name = sf.set.String("name", "", "Required: name of the cert, usually a hostname")
@@ -97,6 +97,9 @@ func signCert(args []string, out io.Writer, errOut io.Writer, pr PasswordReader)
 	if isP11 && *sf.outKeyPath != "" {
 		return newHelpErrorf("cannot set -out-key with -pkcs11")
 	}
+	if *sf.hpkePubPath != "" && *sf.hpkeKeyPath != "" {
+		return newHelpErrorf("cannot set both -hpke-pub and -hpke-key")
+	}
 
 	var v4Networks []netip.Prefix
 	var v6Networks []netip.Prefix
@@ -120,6 +123,9 @@ func signCert(args []string, out io.Writer, errOut io.Writer, pr PasswordReader)
 	}
 	if *sf.outCertPath == "" {
 		*sf.outCertPath = *sf.name + ".crt"
+	}
+	if *sf.hpkePubPath == "" && *sf.hpkeKeyPath == "" {
+		*sf.hpkeKeyPath = *sf.name + ".hpke.key"
 	}
 
 	var claims ioClaims
@@ -364,9 +370,6 @@ func signCert(args []string, out io.Writer, errOut io.Writer, pr PasswordReader)
 	// Write HPKE private key for v3 certs
 	if version == cert.Version3 && len(hpkePriv) > 0 {
 		hpkeKeyPath := *sf.hpkeKeyPath
-		if hpkeKeyPath == "" {
-			hpkeKeyPath = *sf.name + ".hpke.key"
-		}
 		if !isStdio(hpkeKeyPath) {
 			if _, err := os.Stat(hpkeKeyPath); err == nil {
 				return fmt.Errorf("refusing to overwrite existing hpke key: %s", hpkeKeyPath)

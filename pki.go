@@ -81,7 +81,6 @@ func NewPKIFromConfig(l *slog.Logger, c *config.C) (*PKI, error) {
 		if rErr != nil {
 			util.LogWithContextIfNeeded("Failed to reload PKI from config", rErr, l)
 		}
-		pki.computeHeaderKey()
 	})
 
 	return pki, nil
@@ -102,6 +101,7 @@ func (p *PKI) computeHeaderKey() {
 	copy(p.headerKey[:], h.Sum(nil)[:16])
 	if block, err := aes.NewCipher(p.headerKey[:]); err == nil {
 		p.headerBlock.Store(&headerBlockWrapper{block: block})
+		p.l.Debug("Initialized packet header cipher")
 	} else {
 		p.l.Warn("failed to initialize header cipher", "error", err)
 	}

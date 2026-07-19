@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"os"
 	"slices"
 	"strconv"
 	"sync"
@@ -29,6 +30,7 @@ var ErrBadDetailsVpnAddr = errors.New("invalid packet, malformed detailsVpnAddr"
 type peerCertEntry struct {
 	bytes    []byte
 	addedAt  time.Time
+	configured bool
 }
 
 type LightHouse struct {
@@ -373,6 +375,10 @@ func (lh *LightHouse) reload(c *config.C, initial bool) error {
 		}
 	}
 
+	if err := lh.reloadConfiguredPeerCerts(c); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -499,6 +505,9 @@ func (lh *LightHouse) GetPeerCert(vpnAddr netip.Addr) ([]byte, bool) {
 	if !ok {
 		return nil, false
 	}
+	if entry.configured {
+		return entry.bytes, true
+	}
 	if time.Since(entry.addedAt) > peerCertTTL {
 		lh.Lock()
 		current, still := lh.peerCerts[vpnAddr]
@@ -513,7 +522,9 @@ func (lh *LightHouse) GetPeerCert(vpnAddr netip.Addr) ([]byte, bool) {
 
 func (lh *LightHouse) DeletePeerCert(vpnAddr netip.Addr) {
 	lh.Lock()
-	delete(lh.peerCerts, vpnAddr)
+	if entry, ok := lh.peerCerts[vpnAddr]; ok && !entry.configured {
+		delete(lh.peerCerts, vpnAddr)
+	}
 	lh.Unlock()
 }
 
@@ -521,6 +532,76 @@ func (lh *LightHouse) setPeerCert(vpnAddr netip.Addr, certBytes []byte) {
 	lh.Lock()
 	lh.peerCerts[vpnAddr] = &peerCertEntry{bytes: certBytes, addedAt: time.Now()}
 	lh.Unlock()
+}
+
+func (lh *LightHouse) reloadConfiguredPeerCerts(c *config.C) error {
+	raw := c.GetMap("pki.peer_certs", nil)
+	configured := map[netip.Addr][]byte{}
+
+	for rawAddr, rawCert := range raw {
+		vpnAddr, err := netip.ParseAddr(rawAddr)
+		if err != nil {
+			return util.NewContextualError("Unable to parse pki.peer_certs entry", m{"vpnAddr": rawAddr}, err)
+		}
+
+		certBytes, err := loadConfiguredPeerCert(fmt.Sprintf("%v", rawCert))
+		if err != nil {
+			return util.NewContextualError("Unable to load pki.peer_certs entry", m{"vpnAddr": rawAddr}, err)
+		}
+
+		crt, _, err := cert.UnmarshalCertificateFromPEM(certBytes)
+		if err != nil {
+			return util.NewContextualError("Unable to parse pki.peer_certs certificate", m{"vpnAddr": rawAddr}, err)
+		}
+		if crt.IsCA() {
+			return util.NewContextualError("pki.peer_certs entry must be a host certificate", m{"vpnAddr": rawAddr}, nil)
+		}
+
+		var found bool
+		for _, network := range crt.Networks() {
+			if network.Addr() == vpnAddr {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return util.NewContextualError("pki.peer_certs key is not present in certificate networks", m{"vpnAddr": rawAddr, "certNetworks": crt.Networks()}, nil)
+		}
+
+		hsBytes, err := crt.MarshalForHandshakes()
+		if err != nil {
+			return util.NewContextualError("Unable to marshal pki.peer_certs certificate", m{"vpnAddr": rawAddr}, err)
+		}
+
+		configured[vpnAddr] = hsBytes
+		for _, network := range crt.Networks() {
+			configured[network.Addr()] = hsBytes
+		}
+	}
+
+	lh.Lock()
+	for vpnAddr, entry := range lh.peerCerts {
+		if entry.configured {
+			delete(lh.peerCerts, vpnAddr)
+		}
+	}
+	for vpnAddr, certBytes := range configured {
+		lh.peerCerts[vpnAddr] = &peerCertEntry{
+			bytes:      certBytes,
+			addedAt:    time.Now(),
+			configured: true,
+		}
+	}
+	lh.Unlock()
+
+	return nil
+}
+
+func loadConfiguredPeerCert(value string) ([]byte, error) {
+	if strings.Contains(value, "-----BEGIN") {
+		return []byte(value), nil
+	}
+	return os.ReadFile(value)
 }
 
 func (lh *LightHouse) Query(vpnAddr netip.Addr) *RemoteList {

@@ -547,6 +547,9 @@ func (m *Machine) initiateEncrypt(out []byte, remoteHPKEPub []byte, cred *Creden
 	if suite == nil {
 		return nil, fmt.Errorf("hpke suite not configured")
 	}
+	if err := validateHPKEKeyMaterial(cred, remoteHPKEPub); err != nil {
+		return nil, err
+	}
 
 	// msg1 carries the sender HPKE public key in clear so the responder can
 	// perform AuthDecap before decrypting the certificate payload.
@@ -574,6 +577,20 @@ func (m *Machine) initiateEncrypt(out []byte, remoteHPKEPub []byte, cred *Creden
 
 	m.step++
 	return out, nil
+}
+
+func validateHPKEKeyMaterial(cred *Credential, remoteHPKEPub []byte) error {
+	kem := cred.HPKESuite.KEM
+	if len(cred.HPKEPub) != kem.PublicKeyLen() {
+		return fmt.Errorf("local HPKE public key length %d does not match configured KEM public key length %d", len(cred.HPKEPub), kem.PublicKeyLen())
+	}
+	if len(cred.hpkePriv) != kem.PrivateKeyLen() {
+		return fmt.Errorf("local HPKE private key length %d does not match configured KEM private key length %d", len(cred.hpkePriv), kem.PrivateKeyLen())
+	}
+	if len(remoteHPKEPub) != kem.PublicKeyLen() {
+		return fmt.Errorf("remote HPKE public key length %d does not match configured KEM public key length %d", len(remoteHPKEPub), kem.PublicKeyLen())
+	}
+	return nil
 }
 
 // hpkeInfo builds the HPKE `info` parameter by binding a label, the sender

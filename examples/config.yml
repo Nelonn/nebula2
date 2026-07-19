@@ -7,6 +7,12 @@ pki:
   ca: /etc/nebula/ca.crt
   cert: /etc/nebula/host.crt
   key: /etc/nebula/host.key
+  # HPKE private key matching the HPKE public key embedded in cert.
+  hpke_key: /etc/nebula/host.hpke.key
+  # peer_certs seeds HPKE bootstrap for lighthouses/static peers before the first tunnel exists.
+  # Each value may be a certificate path or an inline certificate PEM block.
+  #peer_certs:
+  #  "192.168.100.1": /etc/nebula/lighthouse1.crt
   # blocklist is a list of certificate fingerprints that we will refuse to talk to
   #blocklist:
   #  - c99d4e650533b92061b09918e838a5a0a6aaee21eed1d12fd937682865936c72
@@ -14,10 +20,8 @@ pki:
   #disconnect_invalid: true
 
   # initiating_version controls which certificate version is used when initiating handshakes.
-  # This setting only applies if both a v1 and a v2 certificate are configured, in which case it will default to `1`.
-  # Once all hosts in the mesh are configured with both a v1 and v2 certificate then this should be changed to `2`.
-  # After all hosts in the mesh are using a v2 certificate then v1 certificates are no longer needed.
-  # initiating_version: 1
+  # Only certificate version 3 is supported.
+  # initiating_version: 3
 
 # The static host map defines a set of hosts with fixed IP addresses on the internet (or any network).
 # A host can have multiple fixed IP addresses defined here, and nebula will try each when establishing a tunnel.

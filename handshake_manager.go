@@ -185,6 +185,15 @@ func (hm *HandshakeManager) TrialDecap(via ViaSender, packet []byte) bool {
 	if suite == nil {
 		return false
 	}
+	if len(cred.HPKEPub) != suite.KEM.PublicKeyLen() || len(cred.GetHPKEPriv()) != suite.KEM.PrivateKeyLen() {
+		hm.l.Warn("local HPKE key material does not match configured KEM",
+			"publicKeyLen", len(cred.HPKEPub),
+			"privateKeyLen", len(cred.GetHPKEPriv()),
+			"kemPublicKeyLen", suite.KEM.PublicKeyLen(),
+			"kemPrivateKeyLen", suite.KEM.PrivateKeyLen(),
+		)
+		return false
+	}
 
 	pubLen := suite.KEM.PublicKeyLen()
 	encLen := suite.KEM.EncLen()
@@ -692,6 +701,11 @@ func (hm *HandshakeManager) buildStage0Packet(hh *HandshakeHostInfo) bool {
 			"vpnAddrs", hh.hostinfo.vpnAddrs, "certVersion", v)
 		return false
 	}
+	if cred.HPKESuite == nil {
+		hm.f.l.Error("Unable to handshake with host because no HPKE suite is configured",
+			"vpnAddrs", hh.hostinfo.vpnAddrs, "certVersion", v)
+		return false
+	}
 
 	machine, err := handshake.NewMachine(
 		v, cs.GetCredential,
@@ -730,6 +744,15 @@ func (hm *HandshakeManager) buildStage0Packet(hh *HandshakeHostInfo) bool {
 		if len(hh.hostinfo.vpnAddrs) > 0 {
 			hm.lightHouse.QueryServer(hh.hostinfo.vpnAddrs[0])
 		}
+		return false
+	}
+	if len(remoteHPKEPub) != cred.HPKESuite.KEM.PublicKeyLen() {
+		hm.f.l.Warn("Remote HPKE key type does not match local HPKE configuration",
+			"vpnAddrs", hh.hostinfo.vpnAddrs,
+			"remoteKeyLen", len(remoteHPKEPub),
+			"localKeyLen", len(cred.HPKEPub),
+			"kemPublicKeyLen", cred.HPKESuite.KEM.PublicKeyLen(),
+		)
 		return false
 	}
 
