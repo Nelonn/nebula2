@@ -2,6 +2,8 @@ package nebula
 
 import (
 	"context"
+	"crypto/aes"
+	"encoding/binary"
 	"log/slog"
 	"net/netip"
 
@@ -349,22 +351,32 @@ func (f *Interface) sendNoMetrics(t header.MessageType, st header.MessageSubType
 
 	if useRelay {
 		if len(out) < header.Len {
-			// out always has a capacity of mtu, but not always a length greater than the header.Len.
-			// Grow it to make sure the next operation works.
 			out = out[:header.Len]
 		}
-		// Save a header's worth of data at the front of the 'out' buffer.
 		out = out[header.Len:]
 	}
 
 	if noiseutil.EncryptLockNeeded {
-		// NOTE: for goboring AESGCMTLS we need to lock because of the nonce check
 		ci.writeLock.Lock()
 	}
 	c := ci.messageCounter.Add(1)
 
-	//l.WithField("trace", string(debug.Stack())).Error("out Header ", &Header{Version, t, st, 0, hostinfo.remoteIndexId, c}, p)
-	out = header.Encode(out, header.Version, t, st, hostinfo.remoteIndexId, c)
+	// Build plain header: [remote_index(4)][counter(8)][msg_type(1)][msg_subtype(1)][reserved(2)]
+	var plainHdr [16]byte
+	binary.BigEndian.PutUint32(plainHdr[0:4], hostinfo.remoteIndexId)
+	plainHdr[4] = byte(t)
+	plainHdr[5] = byte(st)
+	binary.BigEndian.PutUint64(plainHdr[6:14], c)
+
+	hKey := f.pki.HeaderKey()
+	block, encErr := aes.NewCipher(hKey[:])
+	if encErr != nil {
+		hostinfo.logger(f.l).Error("Failed to create AES cipher for header", "error", encErr)
+		if noiseutil.EncryptLockNeeded { ci.writeLock.Unlock() }
+		return
+	}
+	block.Encrypt(out[:16], plainHdr[:])
+	out = out[:16]
 	f.connectionManager.Out(hostinfo)
 
 	// Query our LH if we haven't since the last time we've been rebound, this will cause the remote to punch against

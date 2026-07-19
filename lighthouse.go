@@ -40,6 +40,9 @@ type LightHouse struct {
 	// map of vpn addr to answers
 	addrMap map[netip.Addr]*RemoteList
 
+	// Peer certificate cache: vpnAddr -> MarshalForHandshakes bytes
+	peerCerts map[netip.Addr][]byte
+
 	// filters remote addresses allowed for each host
 	// - When we are a lighthouse, this filters what addresses we store and
 	// respond with.
@@ -101,6 +104,7 @@ func NewLightHouseFromConfig(ctx context.Context, l *slog.Logger, c *config.C, c
 		myVpnNetworks:      cs.myVpnNetworks,
 		myVpnNetworksTable: cs.myVpnNetworksTable,
 		addrMap:            make(map[netip.Addr]*RemoteList),
+		peerCerts:          make(map[netip.Addr][]byte),
 		nebulaPort:         nebulaPort,
 		punchy:             p,
 		updateTrigger:      make(chan struct{}, 1),
@@ -479,6 +483,13 @@ func (lh *LightHouse) loadStaticMap(c *config.C, staticList map[netip.Addr]struc
 	}
 
 	return nil
+}
+
+func (lh *LightHouse) GetPeerCert(vpnAddr netip.Addr) ([]byte, bool) {
+	lh.RLock()
+	certBytes, ok := lh.peerCerts[vpnAddr]
+	lh.RUnlock()
+	return certBytes, ok
 }
 
 func (lh *LightHouse) Query(vpnAddr netip.Addr) *RemoteList {
@@ -994,12 +1005,22 @@ func (lh *LightHouse) SendUpdate() {
 					relays = append(relays, netAddrToProtoAddr(r))
 				}
 
+				var certBytes []byte
+				if cs := lh.ifce.GetCertState(); cs != nil {
+					if cred := cs.GetCredential(cert.Version3); cred != nil {
+						certBytes = cred.Bytes
+					} else if cred := cs.GetCredential(cert.Version2); cred != nil {
+						certBytes = cred.Bytes
+					}
+				}
+
 				msg := NebulaMeta{
 					Type: NebulaMeta_HostUpdateNotification,
 					Details: &NebulaMetaDetails{
 						V4AddrPorts:   v4,
 						V6AddrPorts:   v6,
 						RelayVpnAddrs: relays,
+						Certificate:   certBytes,
 					},
 				}
 
@@ -1162,6 +1183,13 @@ func (lhh *LightHouseHandler) handleHostQuery(n *NebulaMeta, fromVpnAddrs []neti
 
 		lhh.coalesceAnswers(useVersion, c, n)
 
+		// Include the peer's certificate in the reply for HPKE handshake
+		lhh.lh.RLock()
+		if certBytes, ok := lhh.lh.peerCerts[queryVpnAddr]; ok && len(certBytes) > 0 {
+			n.Details.Certificate = certBytes
+		}
+		lhh.lh.RUnlock()
+
 		return n.MarshalTo(lhh.pb)
 	})
 
@@ -1312,7 +1340,10 @@ func (lhh *LightHouseHandler) handleHostQueryReply(n *NebulaMeta, fromVpnAddrs [
 	am.unlockedSetRelay(fromVpnAddrs[0], relays)
 	am.Unlock()
 
-	// Non-blocking attempt to trigger, skip if it would block
+	if len(n.Details.Certificate) > 0 {
+		lhh.lh.peerCerts[certVpnAddr] = n.Details.Certificate
+	}
+
 	select {
 	case lhh.lh.handshakeTrigger <- certVpnAddr:
 	default:
@@ -1365,6 +1396,19 @@ func (lhh *LightHouseHandler) handleHostUpdateNotification(n *NebulaMeta, fromVp
 	am.unlockedSetV6(fromVpnAddrs[0], fromVpnAddrs[0], n.Details.V6AddrPorts, lhh.lh.unlockedShouldAddV6)
 	am.unlockedSetRelay(fromVpnAddrs[0], relays)
 	am.Unlock()
+
+	// Store peer certificate if available via the update
+	if len(n.Details.Certificate) > 0 {
+		lhh.lh.Lock()
+		lhh.lh.peerCerts[fromVpnAddrs[0]] = n.Details.Certificate
+		lhh.lh.Unlock()
+	} else if hi := w.GetHostInfo(fromVpnAddrs[0]); hi != nil && hi.ConnectionState != nil && hi.ConnectionState.peerCert != nil {
+		if certBytes, cerr := hi.ConnectionState.peerCert.Certificate.MarshalForHandshakes(); cerr == nil {
+			lhh.lh.Lock()
+			lhh.lh.peerCerts[fromVpnAddrs[0]] = certBytes
+			lhh.lh.Unlock()
+		}
+	}
 
 	n = lhh.resetMeta()
 	n.Type = NebulaMeta_HostUpdateNotificationAck

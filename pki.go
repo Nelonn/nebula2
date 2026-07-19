@@ -1,6 +1,7 @@
 package nebula
 
 import (
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -26,10 +27,13 @@ import (
 )
 
 type PKI struct {
-	cs     atomic.Pointer[CertState]
-	caPool atomic.Pointer[cert.CAPool]
-	l      *slog.Logger
+	cs        atomic.Pointer[CertState]
+	caPool    atomic.Pointer[cert.CAPool]
+	l         *slog.Logger
+	headerKey [16]byte
 }
+
+func (p *PKI) HeaderKey() [16]byte { return p.headerKey }
 
 type CertState struct {
 	v1Cert       cert.Certificate
@@ -63,14 +67,32 @@ func NewPKIFromConfig(l *slog.Logger, c *config.C) (*PKI, error) {
 		return nil, err
 	}
 
+	pki.computeHeaderKey()
+
 	c.RegisterReloadCallback(func(c *config.C) {
 		rErr := pki.reload(c, false)
 		if rErr != nil {
 			util.LogWithContextIfNeeded("Failed to reload PKI from config", rErr, l)
 		}
+		pki.computeHeaderKey()
 	})
 
 	return pki, nil
+}
+
+func (p *PKI) computeHeaderKey() {
+	pool := p.caPool.Load()
+	h := sha256.New()
+	if pool != nil {
+		// Hash all CA certificate fingerprints to derive the global header key.
+		// All nodes with the same CA get the same key.
+		fps := pool.GetFingerprints()
+		slices.Sort(fps)
+		for _, fp := range fps {
+			h.Write([]byte(fp))
+		}
+	}
+	copy(p.headerKey[:], h.Sum(nil)[:16])
 }
 
 func (p *PKI) GetCAPool() *cert.CAPool {
@@ -395,24 +417,9 @@ func newCertStateFromConfig(c *config.C, cipher string) (*CertState, error) {
 		return nil, errors.New("no certificates found in pki.cert")
 	}
 
-	useInitiatingVersion := uint32(3)
-	if v3 == nil {
-		useInitiatingVersion = 1
-		if v1 == nil {
-			useInitiatingVersion = 2
-		}
-	}
-
-	rawInitiatingVersion := c.GetUint32("pki.initiating_version", useInitiatingVersion)
+	rawInitiatingVersion := c.GetUint32("pki.initiating_version", 3)
 	var initiatingVersion cert.Version
 	switch rawInitiatingVersion {
-	case 1:
-		if v1 == nil {
-			return nil, fmt.Errorf("can not use pki.initiating_version 1 without a v1 certificate in pki.cert")
-		}
-		initiatingVersion = cert.Version1
-	case 2:
-		initiatingVersion = cert.Version2
 	case 3:
 		if v3 == nil {
 			return nil, fmt.Errorf("can not use pki.initiating_version 3 without a v3 certificate in pki.cert")

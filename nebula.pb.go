@@ -187,6 +187,14 @@ type NebulaMetaDetails struct {
 	V4AddrPorts      []*V4AddrPort `protobuf:"bytes,2,rep,name=V4AddrPorts,proto3" json:"V4AddrPorts,omitempty"`
 	V6AddrPorts      []*V6AddrPort `protobuf:"bytes,4,rep,name=V6AddrPorts,proto3" json:"V6AddrPorts,omitempty"`
 	Counter          uint32        `protobuf:"varint,3,opt,name=counter,proto3" json:"counter,omitempty"`
+	Certificate      []byte        `protobuf:"bytes,8,opt,name=Certificate,proto3" json:"Certificate,omitempty"`
+}
+
+func (m *NebulaMetaDetails) GetCertificate() []byte {
+	if m != nil {
+		return m.Certificate
+	}
+	return nil
 }
 
 func (m *NebulaMetaDetails) Reset()         { *m = NebulaMetaDetails{} }
@@ -704,6 +712,13 @@ func (m *NebulaMetaDetails) MarshalToSizedBuffer(dAtA []byte) (int, error) {
 	_ = i
 	var l int
 	_ = l
+	if len(m.Certificate) > 0 {
+		i -= len(m.Certificate)
+		copy(dAtA[i:], m.Certificate)
+		i = encodeVarintNebula(dAtA, i, uint64(len(m.Certificate)))
+		i--
+		dAtA[i] = 0x42
+	}
 	if len(m.RelayVpnAddrs) > 0 {
 		for iNdEx := len(m.RelayVpnAddrs) - 1; iNdEx >= 0; iNdEx-- {
 			{
@@ -1065,6 +1080,9 @@ func (m *NebulaMetaDetails) Size() (n int) {
 			l = e.Size()
 			n += 1 + l + sovNebula(uint64(l))
 		}
+	}
+	if l = len(m.Certificate); l > 0 {
+		n += 1 + l + sovNebula(uint64(l))
 	}
 	return n
 }
@@ -1554,6 +1572,40 @@ func (m *NebulaMetaDetails) Unmarshal(dAtA []byte) error {
 			m.RelayVpnAddrs = append(m.RelayVpnAddrs, &Addr{})
 			if err := m.RelayVpnAddrs[len(m.RelayVpnAddrs)-1].Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
 				return err
+			}
+			iNdEx = postIndex
+		case 8:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Certificate", wireType)
+			}
+			var byteLen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowNebula
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				byteLen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if byteLen < 0 {
+				return ErrInvalidLengthNebula
+			}
+			postIndex := iNdEx + byteLen
+			if postIndex < 0 {
+				return ErrInvalidLengthNebula
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.Certificate = append(m.Certificate[:0], dAtA[iNdEx:postIndex]...)
+			if m.Certificate == nil {
+				m.Certificate = []byte{}
 			}
 			iNdEx = postIndex
 		default:

@@ -690,14 +690,28 @@ func (hm *HandshakeManager) buildStage0Packet(hh *HandshakeHostInfo) bool {
 
 	remoteHPKEPub := hh.remoteHPKEPub
 	if len(remoteHPKEPub) == 0 {
-		if cred.HPKEPub != nil {
-			remoteHPKEPub = cred.HPKEPub
+		// Try to fetch the peer's certificate from the lighthouse
+		for _, vpnAddr := range hh.hostinfo.vpnAddrs {
+			if certBytes, ok := hm.lightHouse.GetPeerCert(vpnAddr); ok && len(certBytes) > 0 {
+				// Recombine the certificate and extract HPKE public key
+				peerCert, rErr := cert.Recombine(cert.Version3, certBytes, nil, cred.Cert.Curve())
+				if rErr == nil {
+					if hk, ok2 := peerCert.(cert.HPKEPublicKeyer); ok2 {
+						if pk := hk.HPKEPublicKey(); len(pk) > 0 {
+							remoteHPKEPub = pk
+							hh.remoteHPKEPub = pk
+							break
+						}
+					}
+				}
+			}
 		}
 	}
 
 	if len(remoteHPKEPub) == 0 {
-		hm.f.l.Error("No remote HPKE public key available for handshake",
+		hm.f.l.Debug("No remote HPKE public key, will retry after lighthouse query",
 			"vpnAddrs", hh.hostinfo.vpnAddrs)
+		hm.lightHouse.QueryServer(hh.hostinfo.vpnAddrs[0])
 		return false
 	}
 

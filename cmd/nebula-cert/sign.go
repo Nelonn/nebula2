@@ -109,8 +109,11 @@ func signCert(args []string, out io.Writer, errOut io.Writer, pr PasswordReader)
 	}
 
 	version := cert.Version(*sf.version)
-	if version != 0 && version != cert.Version1 && version != cert.Version2 && version != cert.Version3 {
-		return newHelpErrorf("-version must be %v, %v, or %v", cert.Version1, cert.Version2, cert.Version3)
+	if version == 0 {
+		version = cert.Version3
+	}
+	if version != cert.Version3 {
+		return newHelpErrorf("-version must be %v", cert.Version3)
 	}
 
 	if *sf.outKeyPath == "" {
@@ -196,10 +199,6 @@ func signCert(args []string, out io.Writer, errOut io.Writer, pr PasswordReader)
 
 	if caCert.Expired(time.Now()) {
 		return fmt.Errorf("ca certificate is expired")
-	}
-
-	if version == 0 {
-		version = caCert.Version()
 	}
 
 	if *sf.duration <= 0 {
@@ -327,98 +326,31 @@ func signCert(args []string, out io.Writer, errOut io.Writer, pr PasswordReader)
 	notBefore := time.Now()
 	notAfter := notBefore.Add(*sf.duration)
 
-	switch version {
-	case cert.Version1:
-		if len(v4Networks) != 1 {
-			return newHelpErrorf("invalid -networks definition: v1 certificates can only have a single ipv4 address")
-		}
-		if len(v6Networks) > 0 {
-			return newHelpErrorf("invalid -networks definition: v1 certificates can only contain ipv4 addresses")
-		}
-		if len(v6UnsafeNetworks) > 0 {
-			return newHelpErrorf("invalid -unsafe-networks definition: v1 certificates can only contain ipv4 addresses")
-		}
-
-		t := &cert.TBSCertificate{
-			Version:        cert.Version1,
-			Name:           *sf.name,
-			Networks:       []netip.Prefix{v4Networks[0]},
-			Groups:         groups,
-			UnsafeNetworks: v4UnsafeNetworks,
-			NotBefore:      notBefore,
-			NotAfter:       notAfter,
-			PublicKey:      pub,
-			IsCA:           false,
-			Curve:          curve,
-		}
-
-		var nc cert.Certificate
-		if p11Client == nil {
-			nc, err = t.Sign(caCert, curve, caKey)
-		} else {
-			nc, err = t.SignWith(caCert, curve, p11Client.SignASN1)
-		}
-		if err != nil {
-			return fmt.Errorf("error while signing: %w", err)
-		}
-		crts = append(crts, nc)
-
-	case cert.Version2:
-		t := &cert.TBSCertificate{
-			Version:        cert.Version2,
-			Name:           *sf.name,
-			Networks:       append(v4Networks, v6Networks...),
-			Groups:         groups,
-			UnsafeNetworks: append(v4UnsafeNetworks, v6UnsafeNetworks...),
-			NotBefore:      notBefore,
-			NotAfter:       notAfter,
-			PublicKey:      pub,
-			IsCA:           false,
-			Curve:          curve,
-		}
-
-		var nc cert.Certificate
-		if p11Client == nil {
-			nc, err = t.Sign(caCert, curve, caKey)
-		} else {
-			nc, err = t.SignWith(caCert, curve, p11Client.SignASN1)
-		}
-		if err != nil {
-			return fmt.Errorf("error while signing: %w", err)
-		}
-		crts = append(crts, nc)
-
-	case cert.Version3:
-		if isP11 {
-			return newHelpErrorf("pkcs11 is not supported for v3 certificates")
-		}
-
-		t := &cert.TBSCertificate{
-			Version:        cert.Version3,
-			Name:           *sf.name,
-			Networks:       append(v4Networks, v6Networks...),
-			Groups:         groups,
-			UnsafeNetworks: append(v4UnsafeNetworks, v6UnsafeNetworks...),
-			NotBefore:      notBefore,
-			NotAfter:       notAfter,
-			PublicKey:      pub,
-			HPKEPublicKey:  hpkePub,
-			IsCA:           false,
-			Curve:          curve,
-		}
-
-		var nc cert.Certificate
-		nc, err = t.Sign(caCert, curve, caKey)
-		if err != nil {
-			return fmt.Errorf("error while signing v3 certificate: %w", err)
-		}
-		crts = append(crts, nc)
-
-	default:
-		return fmt.Errorf("invalid version: %d", version)
+	if isP11 {
+		return newHelpErrorf("pkcs11 is not supported for v3 certificates")
 	}
 
-	if !isP11 && *sf.inPubPath == "" && !isV3 {
+	t := &cert.TBSCertificate{
+		Version:        cert.Version3,
+		Name:           *sf.name,
+		Networks:       append(v4Networks, v6Networks...),
+		Groups:         groups,
+		UnsafeNetworks: append(v4UnsafeNetworks, v6UnsafeNetworks...),
+		NotBefore:      notBefore,
+		NotAfter:       notAfter,
+		PublicKey:      pub,
+		HPKEPublicKey:  hpkePub,
+		IsCA:           false,
+		Curve:          curve,
+	}
+
+	nc, err := t.Sign(caCert, curve, caKey)
+	if err != nil {
+		return fmt.Errorf("error while signing v3 certificate: %w", err)
+	}
+	crts = append(crts, nc)
+
+	if !isP11 && *sf.inPubPath == "" {
 		if !isStdio(*sf.outKeyPath) {
 			if _, err := os.Stat(*sf.outKeyPath); err == nil {
 				return fmt.Errorf("refusing to overwrite existing key: %s", *sf.outKeyPath)

@@ -47,7 +47,7 @@ func newCaFlags() *caFlags {
 	cf := caFlags{set: flag.NewFlagSet("ca", flag.ContinueOnError)}
 	cf.set.Usage = func() {}
 	cf.name = cf.set.String("name", "", "Required: name of the certificate authority")
-	cf.version = cf.set.Uint("version", uint(cert.Version2), "Optional: version of the certificate format to use")
+	cf.version = cf.set.Uint("version", uint(cert.Version3), "Optional: version of the certificate format to use")
 	cf.duration = cf.set.Duration("duration", time.Duration(time.Hour*8760), "Optional: amount of time the certificate should be valid for. Valid time units are seconds: \"s\", minutes: \"m\", hours: \"h\"")
 	cf.outKeyPath = cf.set.String("out-key", "ca.key", "Optional: path to write the private key to")
 	cf.outCertPath = cf.set.String("out-crt", "ca.crt", "Optional: path to write the certificate to")
@@ -136,8 +136,8 @@ func ca(args []string, out io.Writer, errOut io.Writer, pr PasswordReader) error
 	}
 
 	version := cert.Version(*cf.version)
-	if version != cert.Version1 && version != cert.Version2 {
-		return newHelpErrorf("-version must be either %v or %v", cert.Version1, cert.Version2)
+	if version != cert.Version3 {
+		return newHelpErrorf("-version must be %v", cert.Version3)
 	}
 
 	var networks []netip.Prefix
@@ -154,10 +154,7 @@ func ca(args []string, out io.Writer, errOut io.Writer, pr PasswordReader) error
 				if err != nil {
 					return newHelpErrorf("invalid -networks definition: %s", rs)
 				}
-				if version == cert.Version1 && !n.Addr().Is4() {
-					return newHelpErrorf("invalid -networks definition: v1 certificates can only be ipv4, have %s", rs)
-				}
-				networks = append(networks, n)
+			networks = append(networks, n)
 			}
 		}
 	}
@@ -175,9 +172,6 @@ func ca(args []string, out io.Writer, errOut io.Writer, pr PasswordReader) error
 				n, err := netip.ParsePrefix(rs)
 				if err != nil {
 					return newHelpErrorf("invalid -unsafe-networks definition: %s", rs)
-				}
-				if version == cert.Version1 && !n.Addr().Is4() {
-					return newHelpErrorf("invalid -unsafe-networks definition: v1 certificates can only be ipv4, have %s", rs)
 				}
 				unsafeNetworks = append(unsafeNetworks, n)
 			}

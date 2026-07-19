@@ -2,6 +2,7 @@ package nebula
 
 import (
 	"context"
+	"crypto/aes"
 	"encoding/binary"
 	"errors"
 	"log/slog"
@@ -24,7 +25,6 @@ var ErrOutOfWindow = errors.New("out of window packet")
 
 func (f *Interface) readOutsidePackets(via ViaSender, out []byte, packet []byte, h *header.H, fwPacket *firewall.Packet, lhf *LightHouseHandler, nb []byte, q int, localCache firewall.ConntrackCache) {
 	// Try headerless HPKE handshake paths first.
-	// msg2 continuation: [initiator_index(4)] + [enc] + [ciphertext]
 	if len(packet) > 4 {
 		idx := binary.BigEndian.Uint32(packet[:4])
 		if hh := f.handshakeManager.QueryIndex(idx); hh != nil {
@@ -32,21 +32,34 @@ func (f *Interface) readOutsidePackets(via ViaSender, out []byte, packet []byte,
 			return
 		}
 	}
-	// msg1: [enc] + [ciphertext] — trial decap
 	if len(packet) > 16 {
 		if f.handshakeManager.TrialDecap(via, packet) {
 			return
 		}
 	}
 
-	// Fall through to header-based dispatch for non-handshake packets.
+	// One AES-ECB decrypt with Global PSK, then look up session_id inside.
+	if len(packet) >= 16 {
+		hKey := f.pki.HeaderKey()
+		var encHdr [16]byte
+		copy(encHdr[:], packet[:16])
+		var decHdr [16]byte
+		block, err := aes.NewCipher(hKey[:])
+		if err == nil {
+			block.Decrypt(decHdr[:], encHdr[:])
+			sessionID := binary.BigEndian.Uint32(decHdr[0:4])
+			if hi := f.hostMap.QueryIndex(sessionID); hi != nil && hi.ConnectionState != nil {
+				f.processDataPacketV2(via, hi, packet, decHdr, nb, out, lhf, q, localCache)
+				return
+			}
+		}
+	}
+
+	// Fall through to header.Parse for lighthouse/recverror/test (plaintext header).
 	err := h.Parse(packet)
 	if err != nil {
 		if len(packet) > 1 {
 			f.messageMetrics.RxInvalid(1)
-			if f.l.Enabled(context.Background(), slog.LevelDebug) {
-				f.l.Debug("Error while parsing inbound packet", "from", via, "error", err)
-			}
 		}
 		return
 	}
@@ -56,14 +69,9 @@ func (f *Interface) readOutsidePackets(via ViaSender, out []byte, packet []byte,
 		return
 	}
 
-	if !via.IsRelayed {
-		if f.myVpnNetworksTable.Contains(via.UdpAddr.Addr()) {
-			f.messageMetrics.RxInvalid(1)
-			if f.l.Enabled(context.Background(), slog.LevelDebug) {
-				f.l.Debug("Refusing to process double encrypted packet", "from", via)
-			}
-			return
-		}
+	if !via.IsRelayed && f.myVpnNetworksTable.Contains(via.UdpAddr.Addr()) {
+		f.messageMetrics.RxInvalid(1)
+		return
 	}
 
 	if h.Type != header.Message {
@@ -72,96 +80,69 @@ func (f *Interface) readOutsidePackets(via ViaSender, out []byte, packet []byte,
 
 	switch h.Type {
 	case header.Handshake:
-		// Old-format handshake (IXPSK0) — no longer supported
 		return
 	case header.RecvError:
 		f.handleRecvError(via.UdpAddr, h)
 		return
-	}
-
-	// Relay packets are special
-	isMessageRelay := (h.Type == header.Message && h.Subtype == header.MessageRelay)
-
-	var hostinfo *HostInfo
-	if isMessageRelay {
-		hostinfo = f.hostMap.QueryRelayIndex(h.RemoteIndex)
-	} else {
-		hostinfo = f.hostMap.QueryIndex(h.RemoteIndex)
-	}
-
-	// At this point we should have a valid existing tunnel, verify and send
-	// recvError if necessary
-	if hostinfo == nil || hostinfo.ConnectionState == nil {
-		if !via.IsRelayed {
-			f.maybeSendRecvError(via.UdpAddr, h.RemoteIndex)
-		}
+	default:
 		return
 	}
+}
 
-	// All remaining packets are encrypted
+func (f *Interface) processDataPacketV2(via ViaSender, hostinfo *HostInfo, packet []byte, decHdr [16]byte, nb, out []byte, lhf *LightHouseHandler, q int, localCache firewall.ConntrackCache) {
+	c := binary.BigEndian.Uint64(decHdr[6:14])
+	msgType := header.MessageType(decHdr[4])
+	msgSubtype := header.MessageSubType(decHdr[5])
 	ci := hostinfo.ConnectionState
-	if !ci.window.Check(f.l, h.MessageCounter) {
+	if ci == nil {
 		return
 	}
 
-	// Relay packets are special
-	if isMessageRelay {
-		f.handleOutsideRelayPacket(hostinfo, via, out, packet, h, fwPacket, lhf, nb, q, localCache)
-
+	if !ci.window.Check(f.l, c) {
 		return
 	}
 
-	out, err = f.decrypt(hostinfo, h.MessageCounter, out, packet, h, nb)
+	pt, err := ci.dKey.DecryptDanger(out, packet[:16], packet[16:], c, nb)
 	if err != nil {
 		if f.l.Enabled(context.Background(), slog.LevelDebug) {
-			hostinfo.logger(f.l).Debug("Failed to decrypt packet",
-				"error", err,
-				"from", via,
-				"header", h,
-			)
+			hostinfo.logger(f.l).Debug("Failed to decrypt packet", "error", err, "from", via)
 		}
 		return
 	}
+	if !ci.window.Update(f.l, c) {
+		return
+	}
 
-	// Roam before we respond
 	f.handleHostRoaming(hostinfo, via)
 	f.connectionManager.In(hostinfo)
 
-	switch h.Type {
+	switch msgType {
 	case header.Message:
-		switch h.Subtype {
+		switch msgSubtype {
 		case header.MessageNone:
-			f.handleOutsideMessagePacket(hostinfo, out, packet, fwPacket, nb, q, localCache)
+			f.handleOutsideMessagePacket(hostinfo, pt, packet, nil, nb, q, localCache)
 		default:
-			hostinfo.logger(f.l).Error("IsValidSubType was true, but unexpected message subtype seen", "from", via, "header", h)
-			return
+			hostinfo.logger(f.l).Error("unexpected message subtype", "from", via, "subtype", msgSubtype)
 		}
-
-	case header.LightHouse:
-		//TODO: assert via is not relayed
-		lhf.HandleRequest(via.UdpAddr, hostinfo.vpnAddrs, out, f)
-
-	case header.Test:
-		switch h.Subtype {
-		case header.TestReply:
-			// No-op, useful for the Roaming and connectionManager side-effects above
-		case header.TestRequest:
-			//recycle the input packet ciphertext as our output buffer
-			f.send(header.Test, header.TestReply, ci, hostinfo, out, nb, packet)
-		default:
-			hostinfo.logger(f.l).Error("IsValidSubType was true, but unexpected test subtype seen", "from", via, "header", h)
-			return
-		}
-
 	case header.CloseTunnel:
 		hostinfo.logger(f.l).Info("Close tunnel received, tearing down.", "from", via)
 		f.closeTunnel(hostinfo)
-
 	case header.Control:
-		f.relayManager.HandleControlMsg(hostinfo, out, f)
-
+		f.relayManager.HandleControlMsg(hostinfo, pt, f)
+	case header.Test:
+		switch msgSubtype {
+		case header.TestReply:
+		case header.TestRequest:
+			f.send(header.Test, header.TestReply, ci, hostinfo, pt, nb, packet)
+		}
+	case header.LightHouse:
+		if !via.IsRelayed && lhf != nil {
+			lhf.HandleRequest(via.UdpAddr, hostinfo.vpnAddrs, pt, f)
+		}
 	default:
-		hostinfo.logger(f.l).Error("IsValidSubType was true, but unexpected message type seen", "from", via, "header", h)
+		if f.l.Enabled(context.Background(), slog.LevelDebug) {
+			hostinfo.logger(f.l).Debug("Unknown message type", "from", via, "type", msgType)
+		}
 	}
 }
 

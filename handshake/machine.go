@@ -28,6 +28,9 @@ type Result struct {
 	HandshakeTime uint64
 	MessageIndex  uint64
 	Initiator     bool
+
+	// LocalIndex and RemoteIndex are the 32-bit session identifiers.
+	// They are placed inside the AES-ECB-encrypted header so DPI never sees them.
 }
 
 type Machine struct {

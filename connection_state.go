@@ -23,10 +23,6 @@ type ConnectionState struct {
 	writeLock      sync.Mutex
 }
 
-// newConnectionStateFromResult builds a fully-populated ConnectionState from a
-// completed handshake.Result. It seeds messageCounter and the replay window so
-// that the post-handshake message indices already used on the wire don't count
-// as missed traffic in the data plane.
 func newConnectionStateFromResult(r *handshake.Result) *ConnectionState {
 	ci := &ConnectionState{
 		myCert:    r.MyCert,
