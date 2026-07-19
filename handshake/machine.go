@@ -49,6 +49,8 @@ type Machine struct {
 	step           int
 	remoteHPKEPub  []byte
 	peerHPKEPub    []byte
+	ss1            []byte
+	ss2            []byte
 }
 
 func NewMachine(
@@ -182,6 +184,7 @@ func (m *Machine) ProcessPacket(out, packet []byte) ([]byte, *Result, error) {
 		if err != nil {
 			return nil, nil, fmt.Errorf("hpke base: %w", err)
 		}
+		m.ss1 = ctx.SharedSecret()
 	} else {
 		pkS := m.remoteHPKEPub
 		if len(pkS) == 0 {
@@ -192,12 +195,11 @@ func (m *Machine) ProcessPacket(out, packet []byte) ([]byte, *Result, error) {
 		if err != nil {
 			return nil, nil, fmt.Errorf("hpke auth: %w", err)
 		}
+		m.ss2 = ctx.SharedSecret()
 	}
 
 	msg, err := ctx.Open(nil, ct)
 	if err != nil {
-		// Decryption failure is recoverable — the caller can retry with a
-		// legitimate packet. Don't mark the machine as failed.
 		return nil, nil, fmt.Errorf("hpke open: %w", err)
 	}
 
@@ -257,6 +259,7 @@ func (m *Machine) respond(out []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("hpke auth setup: %w", err)
 	}
+	m.ss2 = ctx.SharedSecret()
 
 	flags := m.myMsgFlags()
 	hsBytes, err := m.marshalOutgoing(flags)
@@ -294,8 +297,7 @@ func (m *Machine) completed() *Result {
 		return m.result
 	}
 
-	ssLen := suite.KEM.SharedSecretLen()
-	ks := make([]byte, 2*ssLen)
+	ks := append(m.ss1, m.ss2...)
 	masterKey := hkdfExpand(sha256.New, ks, "nebula-hpke-master", 32)
 	eKey := hkdfExpand(sha256.New, masterKey, "initiator-to-responder", 32)
 	dKey := hkdfExpand(sha256.New, masterKey, "responder-to-initiator", 32)
@@ -462,6 +464,7 @@ func (m *Machine) initiateEncrypt(out []byte, remoteHPKEPub []byte, cred *Creden
 	if err != nil {
 		return nil, fmt.Errorf("hpke setup: %w", err)
 	}
+	m.ss1 = ctx.SharedSecret()
 
 	flags := m.myMsgFlags()
 	hsBytes, err := m.marshalOutgoing(flags)
@@ -474,7 +477,6 @@ func (m *Machine) initiateEncrypt(out []byte, remoteHPKEPub []byte, cred *Creden
 		return nil, fmt.Errorf("hpke seal: %w", err)
 	}
 
-	// msg1: [enc] + [ciphertext] — no plaintext header
 	out = append(out, enc...)
 	out = append(out, ct...)
 

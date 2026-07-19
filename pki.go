@@ -1,6 +1,8 @@
 package nebula
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
@@ -31,9 +33,10 @@ type PKI struct {
 	caPool    atomic.Pointer[cert.CAPool]
 	l         *slog.Logger
 	headerKey [16]byte
+	headerBlock cipher.Block
 }
 
-func (p *PKI) HeaderKey() [16]byte { return p.headerKey }
+func (p *PKI) HeaderBlock() cipher.Block { return p.headerBlock }
 
 type CertState struct {
 	v1Cert       cert.Certificate
@@ -93,6 +96,7 @@ func (p *PKI) computeHeaderKey() {
 		}
 	}
 	copy(p.headerKey[:], h.Sum(nil)[:16])
+	p.headerBlock, _ = aes.NewCipher(p.headerKey[:])
 }
 
 func (p *PKI) GetCAPool() *cert.CAPool {

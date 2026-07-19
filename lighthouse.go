@@ -1341,7 +1341,9 @@ func (lhh *LightHouseHandler) handleHostQueryReply(n *NebulaMeta, fromVpnAddrs [
 	am.Unlock()
 
 	if len(n.Details.Certificate) > 0 {
+		lhh.lh.Lock()
 		lhh.lh.peerCerts[certVpnAddr] = n.Details.Certificate
+		lhh.lh.Unlock()
 	}
 
 	select {

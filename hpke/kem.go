@@ -209,10 +209,13 @@ var DefaultHPKE = &HPKESuite{
 }
 
 type Context struct {
-	key   []byte
-	nonce [Nn]byte
-	seq   uint64
+	key           []byte
+	nonce         [Nn]byte
+	seq           uint64
+	sharedSecret  []byte
 }
+
+func (c *Context) SharedSecret() []byte { return c.sharedSecret }
 
 func keySchedule(mode byte, sharedSecret []byte, info []byte, suite *HPKESuite) *Context {
 	suiteID := computeSuiteID(suite)
@@ -223,7 +226,7 @@ func keySchedule(mode byte, sharedSecret []byte, info []byte, suite *HPKESuite) 
 	secret := labeledExtract(preKey, "shared_secret", sharedSecret, suiteID)
 	key := labeledExpand(secret, "key", info, Nk, suiteID)
 	nonceBytes := labeledExpand(secret, "base_nonce", info, Nn, suiteID)
-	ctx := &Context{key: key}
+	ctx := &Context{key: key, sharedSecret: sharedSecret}
 	copy(ctx.nonce[:], nonceBytes)
 	return ctx
 }

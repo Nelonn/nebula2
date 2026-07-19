@@ -2,7 +2,6 @@ package nebula
 
 import (
 	"context"
-	"crypto/aes"
 	"encoding/binary"
 	"log/slog"
 	"net/netip"
@@ -368,14 +367,7 @@ func (f *Interface) sendNoMetrics(t header.MessageType, st header.MessageSubType
 	plainHdr[5] = byte(st)
 	binary.BigEndian.PutUint64(plainHdr[6:14], c)
 
-	hKey := f.pki.HeaderKey()
-	block, encErr := aes.NewCipher(hKey[:])
-	if encErr != nil {
-		hostinfo.logger(f.l).Error("Failed to create AES cipher for header", "error", encErr)
-		if noiseutil.EncryptLockNeeded { ci.writeLock.Unlock() }
-		return
-	}
-	block.Encrypt(out[:16], plainHdr[:])
+	f.pki.HeaderBlock().Encrypt(out[:16], plainHdr[:])
 	out = out[:16]
 	f.connectionManager.Out(hostinfo)
 

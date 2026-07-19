@@ -2,7 +2,6 @@ package nebula
 
 import (
 	"context"
-	"crypto/aes"
 	"encoding/binary"
 	"errors"
 	"log/slog"
@@ -40,18 +39,14 @@ func (f *Interface) readOutsidePackets(via ViaSender, out []byte, packet []byte,
 
 	// One AES-ECB decrypt with Global PSK, then look up session_id inside.
 	if len(packet) >= 16 {
-		hKey := f.pki.HeaderKey()
 		var encHdr [16]byte
 		copy(encHdr[:], packet[:16])
 		var decHdr [16]byte
-		block, err := aes.NewCipher(hKey[:])
-		if err == nil {
-			block.Decrypt(decHdr[:], encHdr[:])
-			sessionID := binary.BigEndian.Uint32(decHdr[0:4])
-			if hi := f.hostMap.QueryIndex(sessionID); hi != nil && hi.ConnectionState != nil {
-				f.processDataPacketV2(via, hi, packet, decHdr, nb, out, lhf, q, localCache)
-				return
-			}
+		f.pki.HeaderBlock().Decrypt(decHdr[:], encHdr[:])
+		sessionID := binary.BigEndian.Uint32(decHdr[0:4])
+		if hi := f.hostMap.QueryIndex(sessionID); hi != nil && hi.ConnectionState != nil {
+			f.processDataPacketV2(via, hi, packet, decHdr, nb, out, lhf, fwPacket, q, localCache)
+			return
 		}
 	}
 
@@ -89,7 +84,7 @@ func (f *Interface) readOutsidePackets(via ViaSender, out []byte, packet []byte,
 	}
 }
 
-func (f *Interface) processDataPacketV2(via ViaSender, hostinfo *HostInfo, packet []byte, decHdr [16]byte, nb, out []byte, lhf *LightHouseHandler, q int, localCache firewall.ConntrackCache) {
+func (f *Interface) processDataPacketV2(via ViaSender, hostinfo *HostInfo, packet []byte, decHdr [16]byte, nb, out []byte, lhf *LightHouseHandler, fwPacket *firewall.Packet, q int, localCache firewall.ConntrackCache) {
 	c := binary.BigEndian.Uint64(decHdr[6:14])
 	msgType := header.MessageType(decHdr[4])
 	msgSubtype := header.MessageSubType(decHdr[5])
@@ -120,7 +115,7 @@ func (f *Interface) processDataPacketV2(via ViaSender, hostinfo *HostInfo, packe
 	case header.Message:
 		switch msgSubtype {
 		case header.MessageNone:
-			f.handleOutsideMessagePacket(hostinfo, pt, packet, nil, nb, q, localCache)
+			f.handleOutsideMessagePacket(hostinfo, pt, packet, fwPacket, nb, q, localCache)
 		default:
 			hostinfo.logger(f.l).Error("unexpected message subtype", "from", via, "subtype", msgSubtype)
 		}
