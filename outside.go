@@ -210,7 +210,7 @@ func (f *Interface) handleOutsideRelayPacket(hostinfo *HostInfo, via ViaSender, 
 	// Relay wire format: [encrypted_header(16)] + [ad] + [AEAD_tag(16)]
 	// AD = [encrypted_header(16)] + [ad], ciphertext = [AEAD_tag]
 	overhead := ci.dKey.Overhead()
-	if len(pt) < overhead {
+	if len(pt) < 16+overhead {
 		return
 	}
 	adLen := len(pt) - overhead

@@ -18,6 +18,7 @@ import (
 	"github.com/slackhq/nebula/header"
 	"github.com/slackhq/nebula/hpke"
 	"github.com/slackhq/nebula/udp"
+	"golang.org/x/time/rate"
 )
 
 const (
@@ -71,6 +72,7 @@ type HandshakeManager struct {
 	metricTimedOut         metrics.Counter
 	f                      *Interface
 	l                      *slog.Logger
+	trialDecapLimiter      *rate.Limiter
 
 	// can be used to trigger outbound handshake for the given vpnIp
 	trigger chan netip.Addr
@@ -131,6 +133,7 @@ func NewHandshakeManager(l *slog.Logger, mainHostMap *HostMap, lightHouse *Light
 		metricInitiated:        metrics.GetOrRegisterCounter("handshake_manager.initiated", nil),
 		metricTimedOut:         metrics.GetOrRegisterCounter("handshake_manager.timed_out", nil),
 		l:                      l,
+		trialDecapLimiter:      rate.NewLimiter(rate.Limit(100), 200),
 	}
 }
 
@@ -154,6 +157,9 @@ func (hm *HandshakeManager) Run(ctx context.Context) {
 // msg1: [enc] + [ciphertext]. Returns true if decap succeeded and a handshake was initiated.
 // Rate-limited to prevent CPU-based DoS from random packets.
 func (hm *HandshakeManager) TrialDecap(via ViaSender, packet []byte) bool {
+	if !hm.trialDecapLimiter.Allow() {
+		return false
+	}
 	cs := hm.f.pki.getCertState()
 	if cs == nil {
 		return false

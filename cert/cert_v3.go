@@ -20,7 +20,6 @@ import (
 
 	"golang.org/x/crypto/cryptobyte"
 	"golang.org/x/crypto/cryptobyte/asn1"
-	"golang.org/x/crypto/curve25519"
 )
 
 type certificateV3 struct {
@@ -600,10 +599,11 @@ const hybridPubKeyLen = 32 + mlkem.EncapsulationKeySize768
 func VerifyHPKEPrivateKey(hpkePub, hpkePriv []byte) error {
 	switch {
 	case len(hpkePub) == 32 && len(hpkePriv) == 32:
-		pub, err := curve25519.X25519(hpkePriv, curve25519.Basepoint)
+		priv, err := ecdh.X25519().NewPrivateKey(hpkePriv)
 		if err != nil {
 			return ErrInvalidPrivateKey
 		}
+		pub := priv.PublicKey().Bytes()
 		if !bytes.Equal(pub, hpkePub) {
 			return ErrPublicPrivateKeyMismatch
 		}
@@ -611,10 +611,11 @@ func VerifyHPKEPrivateKey(hpkePub, hpkePriv []byte) error {
 
 	case len(hpkePub) == hybridPubKeyLen && len(hpkePriv) == 32+mlkem.SeedSize:
 		// Hybrid: private key is [x25519_priv(32)] + [mlkem_seed(SeedSize)]
-		pub, err := curve25519.X25519(hpkePriv[:32], curve25519.Basepoint)
+		priv, err := ecdh.X25519().NewPrivateKey(hpkePriv[:32])
 		if err != nil {
 			return ErrInvalidPrivateKey
 		}
+		pub := priv.PublicKey().Bytes()
 		if !bytes.Equal(pub, hpkePub[:32]) {
 			return ErrPublicPrivateKeyMismatch
 		}
@@ -636,14 +637,11 @@ func VerifyHPKEPrivateKey(hpkePub, hpkePriv []byte) error {
 // GenerateHPKEKeyPair generates an HPKE key pair.
 // If hybrid is true, generates X25519 + ML-KEM768 hybrid keys.
 func GenerateHPKEKeyPair(hybrid bool) (pub, priv []byte, err error) {
-	privKey := make([]byte, 32)
-	if _, err := io.ReadFull(rand.Reader, privKey); err != nil {
-		return nil, nil, err
-	}
-	pubKey, err := curve25519.X25519(privKey, curve25519.Basepoint)
+	privKey, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, nil, err
 	}
+	pubKey := privKey.PublicKey().Bytes()
 	if hybrid {
 		mlkemSeed := make([]byte, mlkem.SeedSize)
 		if _, err := io.ReadFull(rand.Reader, mlkemSeed); err != nil {
@@ -658,9 +656,9 @@ func GenerateHPKEKeyPair(hybrid bool) (pub, priv []byte, err error) {
 		copy(hybridPub, pubKey)
 		copy(hybridPub[32:], mlkemPubBytes)
 		hybridPriv := make([]byte, 32+mlkem.SeedSize)
-		copy(hybridPriv, privKey)
+		copy(hybridPriv, privKey.Bytes())
 		copy(hybridPriv[32:], mlkemSeed)
 		return hybridPub, hybridPriv, nil
 	}
-	return pubKey, privKey, nil
+	return pubKey, privKey.Bytes(), nil
 }

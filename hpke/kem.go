@@ -185,7 +185,7 @@ func labeledExpand(prk []byte, label string, info []byte, length int, suiteID []
 	labeledInfo = append(labeledInfo, info...)
 	out, err := hkdf.Expand(sha256.New, prk, string(labeledInfo), length)
 	if err != nil {
-		return make([]byte, length)
+		panic(fmt.Sprintf("hpke: hkdf expand failed: %v", err))
 	}
 	return out
 }
@@ -271,17 +271,16 @@ func computeSuiteID(suite *HPKESuite) []byte {
 	return id
 }
 
-func (c *Context) computeNonce() ([]byte, error) {
-	if c.seq > (1<<64)-2 {
-		return nil, fmt.Errorf("hpke: seq overflow")
+func (c *Context) computeNonce(seq uint64) ([Nn]byte, error) {
+	if seq > (1<<64)-2 {
+		return [Nn]byte{}, fmt.Errorf("hpke: seq overflow")
 	}
 	var nonce [Nn]byte
-	binary.BigEndian.PutUint64(nonce[Nn-8:], c.seq)
+	binary.BigEndian.PutUint64(nonce[Nn-8:], seq)
 	for i := 0; i < Nn; i++ {
 		nonce[i] ^= c.nonce[i]
 	}
-	c.seq++
-	return nonce[:], nil
+	return nonce, nil
 }
 
 func (c *Context) Seal(aad, pt []byte) ([]byte, error) {
@@ -289,13 +288,13 @@ func (c *Context) Seal(aad, pt []byte) ([]byte, error) {
 		return nil, fmt.Errorf("hpke: AEAD not initialized")
 	}
 	c.mu.Lock()
-	nonce, err := c.computeNonce()
+	defer c.mu.Unlock()
+	nonce, err := c.computeNonce(c.seq)
 	if err != nil {
-		c.mu.Unlock()
 		return nil, err
 	}
-	out := c.aead.Seal(nil, nonce, pt, aad)
-	c.mu.Unlock()
+	out := c.aead.Seal(nil, nonce[:], pt, aad)
+	c.seq++
 	return out, nil
 }
 
@@ -304,16 +303,16 @@ func (c *Context) Open(aad, ct []byte) ([]byte, error) {
 		return nil, fmt.Errorf("hpke: AEAD not initialized")
 	}
 	c.mu.Lock()
-	nonce, err := c.computeNonce()
-	if err != nil {
-		c.mu.Unlock()
-		return nil, err
-	}
-	pt, err := c.aead.Open(nil, nonce, ct, aad)
-	c.mu.Unlock()
+	defer c.mu.Unlock()
+	nonce, err := c.computeNonce(c.seq)
 	if err != nil {
 		return nil, err
 	}
+	pt, err := c.aead.Open(nil, nonce[:], ct, aad)
+	if err != nil {
+		return nil, err
+	}
+	c.seq++
 	return pt, nil
 }
 
