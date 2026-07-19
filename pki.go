@@ -331,7 +331,6 @@ func newHPKESuite(hybrid bool) *hpke.HPKESuite {
 	}
 }
 
-func (cs *CertState) GetHPKEPriv() []byte  { return cs.hpkePrivateKey }
 func (cs *CertState) GetHPKEHybrid() bool  { return cs.hpkeHybrid }
 
 func (cs *CertState) String() string {

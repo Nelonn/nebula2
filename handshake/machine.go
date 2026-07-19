@@ -3,7 +3,6 @@ package handshake
 import (
 	"bytes"
 	"crypto/hkdf"
-	"crypto/hmac"
 	"crypto/sha256"
 	"fmt"
 	"hash"
@@ -315,10 +314,13 @@ func (m *Machine) completed() *Result {
 	}
 
 	// HKDF-Extract: concat(ss1, ss2) → uniform PRK (RFC 5869)
-	mac := hmac.New(sha256.New, nil)
-	mac.Write(m.ss1)
-	mac.Write(m.ss2)
-	prk := mac.Sum(nil)
+	ks := make([]byte, len(m.ss1)+len(m.ss2))
+	copy(ks, m.ss1)
+	copy(ks[len(m.ss1):], m.ss2)
+	prk, err := hkdf.Extract(sha256.New, ks, nil)
+	if err != nil {
+		return m.result
+	}
 
 	// HKDF-Expand: PRK → master key
 	masterKey := hkdfExpand(sha256.New, prk, "nebula-hpke-master", 32)

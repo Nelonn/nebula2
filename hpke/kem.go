@@ -3,7 +3,6 @@ package hpke
 import (
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/ecdh"
 	"crypto/hkdf"
 	"crypto/hmac"
 	"crypto/rand"
@@ -12,6 +11,9 @@ import (
 	"fmt"
 	"io"
 	"sync"
+
+	"github.com/cloudflare/circl/kem"
+	circlkem "github.com/cloudflare/circl/kem/schemes"
 )
 
 const (
@@ -25,6 +27,8 @@ const (
 	Nk       = 32
 	Nn       = 12
 	X25519PK = 32
+
+	sharedSecretExportLabel = "nebula-hpke-shared"
 )
 
 type KEM interface {
@@ -44,158 +48,87 @@ type dhkemX25519 struct{}
 
 var DHKEM_X25519 KEM = &dhkemX25519{}
 
-func (*dhkemX25519) ID() uint16 { return KEMID_DHKEM_X25519 }
+var x25519Scheme = circlkem.ByName("HPKE_KEM_X25519_HKDF_SHA256")
 
-func (*dhkemX25519) PublicKeyLen() int    { return 32 }
-func (*dhkemX25519) PrivateKeyLen() int   { return 32 }
-func (*dhkemX25519) SharedSecretLen() int { return 32 }
-func (*dhkemX25519) EncLen() int          { return 32 }
+func (*dhkemX25519) ID() uint16               { return KEMID_DHKEM_X25519 }
+func (*dhkemX25519) PublicKeyLen() int          { return 32 }
+func (*dhkemX25519) PrivateKeyLen() int         { return 32 }
+func (*dhkemX25519) SharedSecretLen() int       { return 32 }
+func (*dhkemX25519) EncLen() int                { return 32 }
 
 func (*dhkemX25519) GenerateKeyPair() ([]byte, []byte, error) {
-	sk, err := ecdh.X25519().GenerateKey(rand.Reader)
+	pk, sk, err := x25519Scheme.GenerateKeyPair()
 	if err != nil {
 		return nil, nil, err
 	}
-	return sk.PublicKey().Bytes(), sk.Bytes(), nil
+	pkBytes, _ := pk.MarshalBinary()
+	skBytes, _ := sk.MarshalBinary()
+	return pkBytes, skBytes, nil
 }
 
 func (*dhkemX25519) Encap(pkR []byte) ([]byte, []byte, error) {
-	sk, err := ecdh.X25519().GenerateKey(rand.Reader)
+	pk, err := x25519Scheme.UnmarshalBinaryPublicKey(pkR)
 	if err != nil {
 		return nil, nil, err
 	}
-	pub := sk.PublicKey().Bytes()
-	pkRKey, err := ecdh.X25519().NewPublicKey(pkR)
+	ct, ss, err := x25519Scheme.Encapsulate(pk)
 	if err != nil {
 		return nil, nil, err
 	}
-	dh, err := sk.ECDH(pkRKey)
-	if err != nil {
-		return nil, nil, err
-	}
-	kemCtx := make([]byte, 0, 3*X25519PK)
-	kemCtx = append(kemCtx, pub...)
-	kemCtx = append(kemCtx, pkR...)
-	ss := extractAndExpand(dh, kemCtx, KEMID_DHKEM_X25519)
-	return ss, pub, nil
+	return ss, ct, nil
 }
 
 func (*dhkemX25519) Decap(enc, skR []byte) ([]byte, error) {
-	sk, err := ecdh.X25519().NewPrivateKey(skR)
+	sk, err := x25519Scheme.UnmarshalBinaryPrivateKey(skR)
 	if err != nil {
 		return nil, err
 	}
-	pkEKey, err := ecdh.X25519().NewPublicKey(enc)
-	if err != nil {
-		return nil, err
-	}
-	dh, err := sk.ECDH(pkEKey)
-	if err != nil {
-		return nil, err
-	}
-	pkR := sk.PublicKey().Bytes()
-	kemCtx := make([]byte, 0, 3*X25519PK)
-	kemCtx = append(kemCtx, enc...)
-	kemCtx = append(kemCtx, pkR...)
-	return extractAndExpand(dh, kemCtx, KEMID_DHKEM_X25519), nil
+	return x25519Scheme.Decapsulate(sk, enc)
 }
 
 func (*dhkemX25519) AuthEncap(pkR []byte, skS []byte) ([]byte, []byte, error) {
-	sk, err := ecdh.X25519().GenerateKey(rand.Reader)
+	auth, ok := x25519Scheme.(kem.AuthScheme)
+	if !ok {
+		return nil, nil, fmt.Errorf("hpke: X25519 does not support Auth mode")
+	}
+	pk, err := x25519Scheme.UnmarshalBinaryPublicKey(pkR)
 	if err != nil {
 		return nil, nil, err
 	}
-	pub := sk.PublicKey().Bytes()
-	pkRKey, err := ecdh.X25519().NewPublicKey(pkR)
+	sk, err := x25519Scheme.UnmarshalBinaryPrivateKey(skS)
 	if err != nil {
 		return nil, nil, err
 	}
-	skSKey, err := ecdh.X25519().NewPrivateKey(skS)
+	ct, ss, err := auth.AuthEncapsulate(pk, sk)
 	if err != nil {
 		return nil, nil, err
 	}
-	dh1, err := sk.ECDH(pkRKey)
-	if err != nil {
-		return nil, nil, err
-	}
-	dh2, err := skSKey.ECDH(pkRKey)
-	if err != nil {
-		return nil, nil, err
-	}
-	pkS := skSKey.PublicKey().Bytes()
-	dh := append(dh1, dh2...)
-	kemCtx := make([]byte, 0, 3*X25519PK)
-	kemCtx = append(kemCtx, pub...)
-	kemCtx = append(kemCtx, pkR...)
-	kemCtx = append(kemCtx, pkS...)
-	ss := extractAndExpand(dh, kemCtx, KEMID_DHKEM_X25519)
-	return ss, pub, nil
+	return ss, ct, nil
 }
 
 func (*dhkemX25519) AuthDecap(enc, skR, pkS []byte) ([]byte, error) {
-	sk, err := ecdh.X25519().NewPrivateKey(skR)
+	auth, ok := x25519Scheme.(kem.AuthScheme)
+	if !ok {
+		return nil, fmt.Errorf("hpke: X25519 does not support Auth mode")
+	}
+	sk, err := x25519Scheme.UnmarshalBinaryPrivateKey(skR)
 	if err != nil {
 		return nil, err
 	}
-	pkEKey, err := ecdh.X25519().NewPublicKey(enc)
+	pk, err := x25519Scheme.UnmarshalBinaryPublicKey(pkS)
 	if err != nil {
 		return nil, err
 	}
-	pkSKey, err := ecdh.X25519().NewPublicKey(pkS)
-	if err != nil {
-		return nil, err
-	}
-	dh1, err := sk.ECDH(pkEKey)
-	if err != nil {
-		return nil, err
-	}
-	dh2, err := sk.ECDH(pkSKey)
-	if err != nil {
-		return nil, err
-	}
-	pkR := sk.PublicKey().Bytes()
-	dh := append(dh1, dh2...)
-	kemCtx := make([]byte, 0, 3*X25519PK)
-	kemCtx = append(kemCtx, enc...)
-	kemCtx = append(kemCtx, pkR...)
-	kemCtx = append(kemCtx, pkS...)
-	return extractAndExpand(dh, kemCtx, KEMID_DHKEM_X25519), nil
+	return auth.AuthDecapsulate(sk, enc, pk)
 }
 
-func labeledExtract(salt []byte, label string, ikm []byte, suiteID []byte) []byte {
-	if salt == nil {
-		salt = make([]byte, Nh)
-	}
-	labeledIKM := make([]byte, 0, len("HPKE-v1")+len(suiteID)+len(label)+len(ikm))
-	labeledIKM = append(labeledIKM, []byte("HPKE-v1")...)
-	labeledIKM = append(labeledIKM, suiteID...)
-	labeledIKM = append(labeledIKM, []byte(label)...)
-	labeledIKM = append(labeledIKM, ikm...)
-	mac := hmac.New(sha256.New, salt)
-	mac.Write(labeledIKM)
-	return mac.Sum(nil)
-}
-
-func labeledExpand(prk []byte, label string, info []byte, length int, suiteID []byte) []byte {
-	labeledInfo := make([]byte, 0, 2+len("HPKE-v1")+len(suiteID)+len(label)+len(info))
-	labeledInfo = append(labeledInfo, byte(length>>8), byte(length&0xff))
-	labeledInfo = append(labeledInfo, []byte("HPKE-v1")...)
-	labeledInfo = append(labeledInfo, suiteID...)
-	labeledInfo = append(labeledInfo, []byte(label)...)
-	labeledInfo = append(labeledInfo, info...)
-	out, err := hkdf.Expand(sha256.New, prk, string(labeledInfo), length)
+func RandomBytes(n int) ([]byte, error) {
+	b := make([]byte, n)
+	_, err := io.ReadFull(rand.Reader, b)
 	if err != nil {
-		panic(fmt.Sprintf("hpke: hkdf expand failed: %v", err))
+		return nil, err
 	}
-	return out
-}
-
-func extractAndExpand(dh, kemCtx []byte, kemID uint16) []byte {
-	suiteID := make([]byte, 5)
-	suiteID[0] = 'K'; suiteID[1] = 'E'; suiteID[2] = 'M'
-	binary.BigEndian.PutUint16(suiteID[3:5], kemID)
-	prk := labeledExtract(nil, "shared_secret", dh, suiteID)
-	return labeledExpand(prk, "shared_secret", kemCtx, Nh, suiteID)
+	return b, nil
 }
 
 type HPKESuite struct {
@@ -211,15 +144,55 @@ var DefaultHPKE = &HPKESuite{
 }
 
 type Context struct {
-	key           []byte
-	nonce         [Nn]byte
-	seq           uint64
-	sharedSecret  []byte
-	aead          cipher.AEAD
-	mu            sync.Mutex
+	sealFn       func(aad, pt []byte) ([]byte, error)
+	openFn       func(aad, ct []byte) ([]byte, error)
+	sharedSecret []byte
+	mu           sync.Mutex
 }
 
 func (c *Context) SharedSecret() []byte { return c.sharedSecret }
+
+func (c *Context) Seal(aad, pt []byte) ([]byte, error) {
+	return c.sealFn(aad, pt)
+}
+
+func (c *Context) Open(aad, ct []byte) ([]byte, error) {
+	return c.openFn(aad, ct)
+}
+
+func labeledExtract(salt []byte, label string, ikm []byte, suiteID []byte) []byte {
+	if salt == nil {
+		salt = make([]byte, Nh)
+	}
+	mac := hmac.New(sha256.New, salt)
+	mac.Write([]byte("HPKE-v1"))
+	mac.Write(suiteID)
+	mac.Write([]byte(label))
+	mac.Write(ikm)
+	return mac.Sum(nil)
+}
+
+func labeledExpand(prk []byte, label string, info []byte, length int, suiteID []byte) []byte {
+	labeledInfo := make([]byte, 0, 2+len("HPKE-v1")+len(suiteID)+len(label)+len(info))
+	labeledInfo = append(labeledInfo, byte(length>>8), byte(length&0xff))
+	labeledInfo = append(labeledInfo, []byte("HPKE-v1")...)
+	labeledInfo = append(labeledInfo, suiteID...)
+	labeledInfo = append(labeledInfo, []byte(label)...)
+	labeledInfo = append(labeledInfo, info...)
+	out, err := hkdf.Expand(sha256.New, prk, string(labeledInfo), length)
+	if err != nil {
+		return make([]byte, length)
+	}
+	return out
+}
+
+func extractAndExpand(dh, kemCtx []byte, kemID uint16) []byte {
+	suiteID := make([]byte, 5)
+	suiteID[0] = 'K'; suiteID[1] = 'E'; suiteID[2] = 'M'
+	binary.BigEndian.PutUint16(suiteID[3:5], kemID)
+	prk := labeledExtract(nil, "shared_secret", dh, suiteID)
+	return labeledExpand(prk, "shared_secret", kemCtx, Nh, suiteID)
+}
 
 func hkdfExtract(salt, ikm []byte) []byte {
 	if salt == nil {
@@ -228,38 +201,6 @@ func hkdfExtract(salt, ikm []byte) []byte {
 	mac := hmac.New(sha256.New, salt)
 	mac.Write(ikm)
 	return mac.Sum(nil)
-}
-
-func keySchedule(mode byte, sharedSecret []byte, info []byte, suite *HPKESuite) *Context {
-	suiteID := computeSuiteID(suite)
-	psk := []byte{}
-	pskID := []byte{}
-
-	earlySecret := hkdfExtract(nil, psk)
-
-	// Per RFC 9180 §5.2:
-	//   psk_id_hash = LabeledExtract(early_secret, "psk_id_hash", psk_id, Nh)
-	//   info_hash   = LabeledExtract(early_secret, "info_hash", info, Nh)
-	pskIDHash := labeledExtract(earlySecret, "psk_id_hash", pskID, suiteID)
-	infoHash := labeledExtract(earlySecret, "info_hash", info, suiteID)
-
-	keyScheduleCtx := make([]byte, 1+Nh+Nh)
-	keyScheduleCtx[0] = mode
-	copy(keyScheduleCtx[1:], pskIDHash)
-	copy(keyScheduleCtx[1+Nh:], infoHash)
-
-	//   secret = LabeledExtract(early_secret, "secret", shared_secret, Nh)
-	secret := labeledExtract(earlySecret, "secret", sharedSecret, suiteID)
-
-	key := labeledExpand(secret, "key", keyScheduleCtx, Nk, suiteID)
-	nonceBytes := labeledExpand(secret, "base_nonce", keyScheduleCtx, Nn, suiteID)
-
-	ctx := &Context{key: key, sharedSecret: sharedSecret}
-	if block, err := aes.NewCipher(key); err == nil {
-		ctx.aead, _ = cipher.NewGCM(block)
-	}
-	copy(ctx.nonce[:], nonceBytes)
-	return ctx
 }
 
 func computeSuiteID(suite *HPKESuite) []byte {
@@ -271,49 +212,66 @@ func computeSuiteID(suite *HPKESuite) []byte {
 	return id
 }
 
-func (c *Context) computeNonce(seq uint64) ([Nn]byte, error) {
-	if seq > (1<<64)-2 {
-		return [Nn]byte{}, fmt.Errorf("hpke: seq overflow")
-	}
-	var nonce [Nn]byte
-	binary.BigEndian.PutUint64(nonce[Nn-8:], seq)
-	for i := 0; i < Nn; i++ {
-		nonce[i] ^= c.nonce[i]
-	}
-	return nonce, nil
-}
+func keySchedule(mode byte, sharedSecret []byte, info []byte, suite *HPKESuite) *Context {
+	suiteID := computeSuiteID(suite)
+	psk := []byte{}
+	pskID := []byte{}
 
-func (c *Context) Seal(aad, pt []byte) ([]byte, error) {
-	if c.aead == nil {
-		return nil, fmt.Errorf("hpke: AEAD not initialized")
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	nonce, err := c.computeNonce(c.seq)
-	if err != nil {
-		return nil, err
-	}
-	out := c.aead.Seal(nil, nonce[:], pt, aad)
-	c.seq++
-	return out, nil
-}
+	earlySecret := hkdfExtract(nil, psk)
 
-func (c *Context) Open(aad, ct []byte) ([]byte, error) {
-	if c.aead == nil {
-		return nil, fmt.Errorf("hpke: AEAD not initialized")
+	pskIDHash := labeledExtract(earlySecret, "psk_id_hash", pskID, suiteID)
+	infoHash := labeledExtract(earlySecret, "info_hash", info, suiteID)
+
+	keyScheduleCtx := make([]byte, 1+Nh+Nh)
+	keyScheduleCtx[0] = mode
+	copy(keyScheduleCtx[1:], pskIDHash)
+	copy(keyScheduleCtx[1+Nh:], infoHash)
+
+	secret := labeledExtract(earlySecret, "secret", sharedSecret, suiteID)
+
+	key := labeledExpand(secret, "key", keyScheduleCtx, Nk, suiteID)
+	nonceBytes := labeledExpand(secret, "base_nonce", keyScheduleCtx, Nn, suiteID)
+
+	block, _ := aes.NewCipher(key)
+	aead, _ := cipher.NewGCM(block)
+
+	seq := uint64(0)
+	var nonceBuf [Nn]byte
+	copy(nonceBuf[:], nonceBytes)
+
+	ctx := &Context{
+		sharedSecret: sharedSecret,
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	nonce, err := c.computeNonce(c.seq)
-	if err != nil {
-		return nil, err
+	ctx.sealFn = func(aad, pt []byte) ([]byte, error) {
+		ctx.mu.Lock()
+		defer ctx.mu.Unlock()
+		if seq > (1<<64)-2 {
+			return nil, fmt.Errorf("hpke: seq overflow")
+		}
+		var n [Nn]byte
+		binary.BigEndian.PutUint64(n[Nn-8:], seq)
+		for i := 0; i < Nn; i++ {
+			n[i] ^= nonceBuf[i]
+		}
+		seq++
+		return aead.Seal(nil, n[:], pt, aad), nil
 	}
-	pt, err := c.aead.Open(nil, nonce[:], ct, aad)
-	if err != nil {
-		return nil, err
+	ctx.openFn = func(aad, ct []byte) ([]byte, error) {
+		ctx.mu.Lock()
+		defer ctx.mu.Unlock()
+		if seq > (1<<64)-2 {
+			return nil, fmt.Errorf("hpke: seq overflow")
+		}
+		var n [Nn]byte
+		binary.BigEndian.PutUint64(n[Nn-8:], seq)
+		for i := 0; i < Nn; i++ {
+			n[i] ^= nonceBuf[i]
+		}
+		seq++
+		return aead.Open(nil, n[:], ct, aad)
 	}
-	c.seq++
-	return pt, nil
+
+	return ctx
 }
 
 func SetupBaseS(pkR []byte, info []byte, suite *HPKESuite) (*Context, []byte, error) {
@@ -350,13 +308,4 @@ func SetupAuthR(enc, skR, pkS []byte, info []byte, suite *HPKESuite) (*Context, 
 	}
 	ctx := keySchedule(2, ss, info, suite)
 	return ctx, nil
-}
-
-func RandomBytes(n int) ([]byte, error) {
-	b := make([]byte, n)
-	_, err := io.ReadFull(rand.Reader, b)
-	if err != nil {
-		return nil, err
-	}
-	return b, nil
 }

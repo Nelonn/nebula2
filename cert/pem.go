@@ -2,6 +2,7 @@ package cert
 
 import (
 	"bytes"
+	"crypto/mlkem"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -246,8 +247,9 @@ func UnmarshalHPKEPrivateKeyFromPEM(b []byte) ([]byte, bool, error) {
 		}
 		return k.Bytes, false, nil
 	case HPKEHybridPrivateKeyBanner:
-		if len(k.Bytes) < 32 {
-			return nil, false, fmt.Errorf("key is too short for hybrid HPKE private key")
+		expectedLen := 32 + mlkem.SeedSize
+		if len(k.Bytes) != expectedLen {
+			return nil, false, fmt.Errorf("key was not %d bytes, is invalid hybrid HPKE private key", expectedLen)
 		}
 		return k.Bytes, true, nil
 	default:
@@ -267,8 +269,9 @@ func UnmarshalHPKEPublicKeyFromPEM(b []byte) ([]byte, bool, error) {
 		}
 		return k.Bytes, false, nil
 	case HPKEHybridPublicKeyBanner:
-		if len(k.Bytes) < 32 {
-			return nil, false, fmt.Errorf("key is too short for hybrid HPKE public key")
+		expectedLen := 32 + mlkem.EncapsulationKeySize768
+		if len(k.Bytes) != expectedLen {
+			return nil, false, fmt.Errorf("key was not %d bytes, is invalid hybrid HPKE public key", expectedLen)
 		}
 		return k.Bytes, true, nil
 	default:
