@@ -106,8 +106,11 @@ func (p *PKI) computeHeaderKey() {
 		}
 	}
 	copy(p.headerKey[:], h.Sum(nil)[:16])
-	block, _ := aes.NewCipher(p.headerKey[:])
-	p.headerBlock.Store(&headerBlockWrapper{block: block})
+	if block, err := aes.NewCipher(p.headerKey[:]); err == nil {
+		p.headerBlock.Store(&headerBlockWrapper{block: block})
+	} else {
+		p.l.Warn("failed to initialize header cipher", "error", err)
+	}
 }
 
 func (p *PKI) GetCAPool() *cert.CAPool {

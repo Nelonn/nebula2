@@ -1366,9 +1366,7 @@ func (lhh *LightHouseHandler) handleHostQueryReply(n *NebulaMeta, fromVpnAddrs [
 	am.Unlock()
 
 	if len(n.Details.Certificate) > 0 {
-		lhh.lh.Lock()
 		lhh.lh.setPeerCert(certVpnAddr, n.Details.Certificate)
-		lhh.lh.Unlock()
 	}
 
 	select {
@@ -1426,14 +1424,10 @@ func (lhh *LightHouseHandler) handleHostUpdateNotification(n *NebulaMeta, fromVp
 
 	// Store peer certificate if available via the update
 	if len(n.Details.Certificate) > 0 {
-		lhh.lh.Lock()
 		lhh.lh.setPeerCert(fromVpnAddrs[0], n.Details.Certificate)
-		lhh.lh.Unlock()
 	} else if hi := w.GetHostInfo(fromVpnAddrs[0]); hi != nil && hi.ConnectionState != nil && hi.ConnectionState.peerCert != nil {
 		if certBytes, cerr := hi.ConnectionState.peerCert.Certificate.MarshalForHandshakes(); cerr == nil {
-			lhh.lh.Lock()
 			lhh.lh.setPeerCert(fromVpnAddrs[0], certBytes)
-			lhh.lh.Unlock()
 		}
 	}
 

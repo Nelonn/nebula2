@@ -11,6 +11,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"sync"
 )
 
 const (
@@ -214,6 +215,8 @@ type Context struct {
 	nonce         [Nn]byte
 	seq           uint64
 	sharedSecret  []byte
+	aead          cipher.AEAD
+	mu            sync.Mutex
 }
 
 func (c *Context) SharedSecret() []byte { return c.sharedSecret }
@@ -252,6 +255,9 @@ func keySchedule(mode byte, sharedSecret []byte, info []byte, suite *HPKESuite) 
 	nonceBytes := labeledExpand(secret, "base_nonce", keyScheduleCtx, Nn, suiteID)
 
 	ctx := &Context{key: key, sharedSecret: sharedSecret}
+	if block, err := aes.NewCipher(key); err == nil {
+		ctx.aead, _ = cipher.NewGCM(block)
+	}
 	copy(ctx.nonce[:], nonceBytes)
 	return ctx
 }
@@ -279,35 +285,32 @@ func (c *Context) computeNonce() ([]byte, error) {
 }
 
 func (c *Context) Seal(aad, pt []byte) ([]byte, error) {
-	block, err := aes.NewCipher(c.key)
-	if err != nil {
-		return nil, err
+	if c.aead == nil {
+		return nil, fmt.Errorf("hpke: AEAD not initialized")
 	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
+	c.mu.Lock()
 	nonce, err := c.computeNonce()
 	if err != nil {
+		c.mu.Unlock()
 		return nil, err
 	}
-	return gcm.Seal(nil, nonce, pt, aad), nil
+	out := c.aead.Seal(nil, nonce, pt, aad)
+	c.mu.Unlock()
+	return out, nil
 }
 
 func (c *Context) Open(aad, ct []byte) ([]byte, error) {
-	block, err := aes.NewCipher(c.key)
-	if err != nil {
-		return nil, err
+	if c.aead == nil {
+		return nil, fmt.Errorf("hpke: AEAD not initialized")
 	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
+	c.mu.Lock()
 	nonce, err := c.computeNonce()
 	if err != nil {
+		c.mu.Unlock()
 		return nil, err
 	}
-	pt, err := gcm.Open(nil, nonce, ct, aad)
+	pt, err := c.aead.Open(nil, nonce, ct, aad)
+	c.mu.Unlock()
 	if err != nil {
 		return nil, err
 	}
