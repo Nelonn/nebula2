@@ -79,7 +79,6 @@ func signCert(args []string, out io.Writer, errOut io.Writer, pr PasswordReader)
 	}
 
 	isP11 := len(*sf.p11url) > 0
-	isV3 := *sf.version == 3
 
 	if !isP11 {
 		if err := mustFlagString("ca-key", sf.caKeyPath); err != nil {
@@ -293,7 +292,7 @@ func signCert(args []string, out io.Writer, errOut io.Writer, pr PasswordReader)
 	// HPKE key handling for v3 certificates
 	var hpkePub, hpkePriv []byte
 	var hpkeHybrid bool
-	if isV3 {
+	if version == cert.Version3 {
 		hpkeHybrid = *sf.hybrid
 		if *sf.hpkePubPath != "" {
 			rawHPKEPub, err := readInput("hpke-pub", *sf.hpkePubPath, &claims)
@@ -363,7 +362,7 @@ func signCert(args []string, out io.Writer, errOut io.Writer, pr PasswordReader)
 	}
 
 	// Write HPKE private key for v3 certs
-	if isV3 && len(hpkePriv) > 0 {
+	if version == cert.Version3 && len(hpkePriv) > 0 {
 		hpkeKeyPath := *sf.hpkeKeyPath
 		if hpkeKeyPath == "" {
 			hpkeKeyPath = *sf.name + ".hpke.key"

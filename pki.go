@@ -557,10 +557,14 @@ func newCertState(dv cert.Version, v1, v2 cert.Certificate, pkcs11backed bool, p
 			hpkePub = hk.HPKEPublicKey()
 		}
 
-		if len(hpkePriv) > 0 && len(hpkePub) > 0 {
-			if err := cert.VerifyHPKEPrivateKey(hpkePub, hpkePriv); err != nil {
-				return nil, fmt.Errorf("HPKE private key does not match HPKE public key in certificate: %w", err)
-			}
+		if len(hpkePub) == 0 {
+			return nil, fmt.Errorf("v3 certificate does not contain an HPKE public key")
+		}
+		if len(hpkePriv) == 0 {
+			return nil, fmt.Errorf("v3 certificate requires pki.hpke_key but no key was provided")
+		}
+		if err := cert.VerifyHPKEPrivateKey(hpkePub, hpkePriv); err != nil {
+			return nil, fmt.Errorf("HPKE private key does not match HPKE public key in certificate: %w", err)
 		}
 
 		if v1 != nil || v2 != nil {

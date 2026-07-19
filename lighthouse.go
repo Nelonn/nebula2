@@ -492,6 +492,12 @@ func (lh *LightHouse) GetPeerCert(vpnAddr netip.Addr) ([]byte, bool) {
 	return certBytes, ok
 }
 
+func (lh *LightHouse) DeletePeerCert(vpnAddr netip.Addr) {
+	lh.Lock()
+	delete(lh.peerCerts, vpnAddr)
+	lh.Unlock()
+}
+
 func (lh *LightHouse) Query(vpnAddr netip.Addr) *RemoteList {
 	if !lh.IsLighthouseAddr(vpnAddr) {
 		lh.QueryServer(vpnAddr)

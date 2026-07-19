@@ -792,6 +792,11 @@ func (hm *HandshakeManager) beginHandshake(via ViaSender, packet []byte, ss1 []b
 		return
 	}
 
+	// Peer cert is no longer needed — clean up lighthouse cache
+	for _, a := range vpnAddrs {
+		hm.lightHouse.DeletePeerCert(a)
+	}
+
 	hostinfo := &HostInfo{
 		ConnectionState:   newConnectionStateFromResult(result),
 		localIndexId:      result.LocalIndex,

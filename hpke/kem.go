@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
+	"fmt"
 	"io"
 )
 
@@ -264,14 +265,17 @@ func computeSuiteID(suite *HPKESuite) []byte {
 	return id
 }
 
-func (c *Context) computeNonce() []byte {
+func (c *Context) computeNonce() ([]byte, error) {
+	if c.seq > (1<<64)-2 {
+		return nil, fmt.Errorf("hpke: seq overflow")
+	}
 	var nonce [Nn]byte
 	binary.BigEndian.PutUint64(nonce[Nn-8:], c.seq)
 	for i := 0; i < Nn; i++ {
 		nonce[i] ^= c.nonce[i]
 	}
 	c.seq++
-	return nonce[:]
+	return nonce[:], nil
 }
 
 func (c *Context) Seal(aad, pt []byte) ([]byte, error) {
@@ -283,7 +287,10 @@ func (c *Context) Seal(aad, pt []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	nonce := c.computeNonce()
+	nonce, err := c.computeNonce()
+	if err != nil {
+		return nil, err
+	}
 	return gcm.Seal(nil, nonce, pt, aad), nil
 }
 
@@ -296,7 +303,10 @@ func (c *Context) Open(aad, ct []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	nonce := c.computeNonce()
+	nonce, err := c.computeNonce()
+	if err != nil {
+		return nil, err
+	}
 	pt, err := gcm.Open(nil, nonce, ct, aad)
 	if err != nil {
 		return nil, err
