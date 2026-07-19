@@ -608,11 +608,8 @@ func VerifyHPKEPrivateKey(hpkePub, hpkePriv []byte) error {
 		}
 		return nil
 
-	case len(hpkePub) > 32 && len(hpkePriv) > 32:
-		// Hybrid: verify both X25519 and ML-KEM768 components
-		if len(hpkePriv) < 32+mlkem.SeedSize {
-			return ErrInvalidPrivateKey
-		}
+	case len(hpkePub) > 32 && len(hpkePriv) == 32+mlkem.SeedSize:
+		// Hybrid: private key is [x25519_priv(32)] + [mlkem_seed(SeedSize)]
 		pub, err := curve25519.X25519(hpkePriv[:32], curve25519.Basepoint)
 		if err != nil {
 			return ErrInvalidPrivateKey
@@ -620,8 +617,7 @@ func VerifyHPKEPrivateKey(hpkePub, hpkePriv []byte) error {
 		if !hmac.Equal(pub, hpkePub[:32]) {
 			return ErrPublicPrivateKeyMismatch
 		}
-		// Validate ML-KEM768 component: verify the seed produces the expected encapsulation key
-		mlkemPriv, err := mlkem.NewDecapsulationKey768(hpkePriv[32 : 32+mlkem.SeedSize])
+		mlkemPriv, err := mlkem.NewDecapsulationKey768(hpkePriv[32:])
 		if err != nil {
 			return ErrInvalidPrivateKey
 		}
@@ -648,19 +644,21 @@ func GenerateHPKEKeyPair(hybrid bool) (pub, priv []byte, err error) {
 		return nil, nil, err
 	}
 	if hybrid {
-		mlkemPriv, err := mlkem.GenerateKey768()
+		mlkemSeed := make([]byte, mlkem.SeedSize)
+		if _, err := io.ReadFull(rand.Reader, mlkemSeed); err != nil {
+			return nil, nil, err
+		}
+		mlkemPriv, err := mlkem.NewDecapsulationKey768(mlkemSeed)
 		if err != nil {
 			return nil, nil, err
 		}
-		mlkemPub := mlkemPriv.EncapsulationKey()
-		mlkemPubBytes := mlkemPub.Bytes()
+		mlkemPubBytes := mlkemPriv.EncapsulationKey().Bytes()
 		hybridPub := make([]byte, 32+len(mlkemPubBytes))
 		copy(hybridPub, pubKey)
 		copy(hybridPub[32:], mlkemPubBytes)
-		mlkemPrivBytes := mlkemPriv.Bytes()
-		hybridPriv := make([]byte, 32+len(mlkemPrivBytes))
+		hybridPriv := make([]byte, 32+mlkem.SeedSize)
 		copy(hybridPriv, privKey)
-		copy(hybridPriv[32:], mlkemPrivBytes)
+		copy(hybridPriv[32:], mlkemSeed)
 		return hybridPub, hybridPriv, nil
 	}
 	return pubKey, privKey, nil

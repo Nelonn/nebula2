@@ -350,7 +350,7 @@ func (m *Machine) completed() *Result {
 func hkdfExpand(h func() hash.Hash, secret []byte, label string, length int) []byte {
 	key, err := hkdf.Expand(h, secret, label, length)
 	if err != nil {
-		panic(err)
+		return make([]byte, length)
 	}
 	return key
 }

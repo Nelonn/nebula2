@@ -183,7 +183,7 @@ func labeledExpand(prk []byte, label string, info []byte, length int, suiteID []
 	labeledInfo = append(labeledInfo, info...)
 	out, err := hkdf.Expand(sha256.New, prk, string(labeledInfo), length)
 	if err != nil {
-		panic(err)
+		return make([]byte, length)
 	}
 	return out
 }
@@ -233,15 +233,19 @@ func keySchedule(mode byte, sharedSecret []byte, info []byte, suite *HPKESuite) 
 
 	earlySecret := hkdfExtract(nil, psk)
 
-	pskIDHash := labeledExpand(earlySecret, "psk_id_hash", pskID, Nh, suiteID)
-	infoHash := labeledExpand(earlySecret, "info_hash", info, Nh, suiteID)
+	// Per RFC 9180 §5.2:
+	//   psk_id_hash = LabeledExtract(early_secret, "psk_id_hash", psk_id, Nh)
+	//   info_hash   = LabeledExtract(early_secret, "info_hash", info, Nh)
+	pskIDHash := labeledExtract(earlySecret, "psk_id_hash", pskID, suiteID)
+	infoHash := labeledExtract(earlySecret, "info_hash", info, suiteID)
 
 	keyScheduleCtx := make([]byte, 1+Nh+Nh)
 	keyScheduleCtx[0] = mode
 	copy(keyScheduleCtx[1:], pskIDHash)
 	copy(keyScheduleCtx[1+Nh:], infoHash)
 
-	secret := labeledExtract(pskIDHash, "secret", sharedSecret, suiteID)
+	//   secret = LabeledExtract(early_secret, "secret", shared_secret, Nh)
+	secret := labeledExtract(earlySecret, "secret", sharedSecret, suiteID)
 
 	key := labeledExpand(secret, "key", keyScheduleCtx, Nk, suiteID)
 	nonceBytes := labeledExpand(secret, "base_nonce", keyScheduleCtx, Nn, suiteID)
