@@ -23,6 +23,10 @@ func Test_keygenHelp(t *testing.T) {
 			"  Pass \"-\" to any path flag to read from stdin or write to stdout.\n"+
 			"  -curve string\n"+
 			"    \tECDH Curve (25519, P256) (default \"25519\")\n"+
+			"  -hpke\n"+
+			"    \tGenerate HPKE key pair (for v3 certs)\n"+
+			"  -hybrid\n"+
+			"    \tGenerate HPKE hybrid key pair (X25519 + ML-KEM768, implies -hpke)\n"+
 			"  -out-key string\n"+
 			"    \tRequired: path to write the private key to\n"+
 			"  -out-pub string\n"+
