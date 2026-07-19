@@ -292,16 +292,25 @@ func (f *Interface) SendVia(via *HostInfo,
 	nocopy bool,
 ) {
 	if noiseutil.EncryptLockNeeded {
-		// NOTE: for goboring AESGCMTLS we need to lock because of the nonce check
 		via.ConnectionState.writeLock.Lock()
 	}
 	c := via.ConnectionState.messageCounter.Add(1)
 
-	out = header.Encode(out, header.Version, header.Message, header.MessageRelay, relay.RemoteIndex, c)
+	// Build encrypted relay header
+	var plainHdr [16]byte
+	binary.BigEndian.PutUint32(plainHdr[0:4], relay.RemoteIndex)
+	plainHdr[4] = byte(header.Message)
+	plainHdr[5] = byte(header.MessageRelay)
+	binary.BigEndian.PutUint64(plainHdr[6:14], c)
+	if block := f.pki.HeaderBlock(); block != nil {
+		block.Encrypt(out[:16], plainHdr[:])
+		out = out[:16]
+	} else {
+		if noiseutil.EncryptLockNeeded { via.ConnectionState.writeLock.Unlock() }
+		return
+	}
 	f.connectionManager.Out(via)
 
-	// Authenticate the header and payload, but do not encrypt for this message type.
-	// The payload consists of the inner, unencrypted Nebula header, as well as the end-to-end encrypted payload.
 	if len(out)+len(ad)+via.ConnectionState.eKey.Overhead() > cap(out) {
 		if noiseutil.EncryptLockNeeded {
 			via.ConnectionState.writeLock.Unlock()
@@ -367,8 +376,13 @@ func (f *Interface) sendNoMetrics(t header.MessageType, st header.MessageSubType
 	plainHdr[5] = byte(st)
 	binary.BigEndian.PutUint64(plainHdr[6:14], c)
 
-	f.pki.HeaderBlock().Encrypt(out[:16], plainHdr[:])
-	out = out[:16]
+	if block := f.pki.HeaderBlock(); block != nil {
+		block.Encrypt(out[:16], plainHdr[:])
+		out = out[:16]
+	} else {
+		if noiseutil.EncryptLockNeeded { ci.writeLock.Unlock() }
+		return
+	}
 	f.connectionManager.Out(hostinfo)
 
 	// Query our LH if we haven't since the last time we've been rebound, this will cause the remote to punch against

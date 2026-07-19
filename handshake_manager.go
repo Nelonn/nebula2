@@ -154,6 +154,9 @@ func (hm *HandshakeManager) Run(ctx context.Context) {
 // msg1: [enc] + [ciphertext]. Returns true if decap succeeded and a handshake was initiated.
 func (hm *HandshakeManager) TrialDecap(via ViaSender, packet []byte) bool {
 	cs := hm.f.pki.getCertState()
+	if cs == nil {
+		return false
+	}
 	cred := cs.GetCredential(cert.Version3)
 	if cred == nil {
 		cred = cs.GetCredential(cert.Version2)

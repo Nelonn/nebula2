@@ -563,6 +563,19 @@ func newCertState(dv cert.Version, v1, v2 cert.Certificate, pkcs11backed bool, p
 			}
 		}
 
+		if v1 != nil || v2 != nil {
+			ref := cs.getCertificate(cert.Version2)
+			if ref == nil {
+				ref = v1
+			}
+			if ref != nil && len(ref.Networks()) > 0 && len(v3.Networks()) > 0 &&
+				!slices.Equal(ref.Networks(), v3.Networks()) {
+				return nil, util.NewContextualError(
+					"v3 certificate networks do not match existing v1/v2 certificate networks",
+					m{"v3_networks": v3.Networks(), "existing_networks": ref.Networks()}, nil)
+			}
+		}
+
 		cs.v3Cert = v3
 		cs.v3Credential = handshake.NewCredential(v3, v3hs, hpkePriv, hpkePub, ncs, hSuite)
 		if cs.initiatingVersion == 0 {

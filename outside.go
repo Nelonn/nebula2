@@ -31,7 +31,11 @@ func (f *Interface) readOutsidePackets(via ViaSender, out []byte, packet []byte,
 		var encHdr [16]byte
 		copy(encHdr[:], packet[:16])
 		var decHdr [16]byte
-		f.pki.HeaderBlock().Decrypt(decHdr[:], encHdr[:])
+		if block := f.pki.HeaderBlock(); block != nil {
+			block.Decrypt(decHdr[:], encHdr[:])
+		} else {
+			return
+		}
 		sessionID := binary.BigEndian.Uint32(decHdr[0:4])
 		if hi := f.hostMap.QueryIndex(sessionID); hi != nil && hi.ConnectionState != nil {
 			f.processDataPacketV2(via, hi, packet, decHdr, nb, out, lhf, fwPacket, q, localCache)
@@ -107,6 +111,9 @@ func (f *Interface) processDataPacketV2(via ViaSender, hostinfo *HostInfo, packe
 		switch msgSubtype {
 		case header.MessageNone:
 			f.handleOutsideMessagePacket(hostinfo, pt, packet, fwPacket, nb, q, localCache)
+		case header.MessageRelay:
+			// Relay — decrypt inner payload and re-dispatch
+			f.handleOutsideRelayPacket(hostinfo, via, pt, decHdr, nb, out, q, localCache)
 		default:
 			hostinfo.logger(f.l).Error("unexpected message subtype", "from", via, "subtype", msgSubtype)
 		}
@@ -132,7 +139,51 @@ func (f *Interface) processDataPacketV2(via ViaSender, hostinfo *HostInfo, packe
 	}
 }
 
-func (f *Interface) handleOutsideRelayPacket(hostinfo *HostInfo, via ViaSender, out []byte, packet []byte, h *header.H, fwPacket *firewall.Packet, lhf *LightHouseHandler, nb []byte, q int, localCache firewall.ConntrackCache) {
+func (f *Interface) handleOutsideRelayPacket(hostinfo *HostInfo, via ViaSender, pt []byte, decHdr [16]byte, nb, out []byte, q int, localCache firewall.ConntrackCache) {
+	c := binary.BigEndian.Uint64(decHdr[6:14])
+	ci := hostinfo.ConnectionState
+	if ci == nil {
+		return
+	}
+
+	// The relay payload is: [inner_encrypted_header(16)] + [AEAD_tag]
+	if len(pt) < ci.dKey.Overhead() {
+		return
+	}
+	sigPayloadEnd := len(pt) - ci.dKey.Overhead()
+	sigPayload := pt[:sigPayloadEnd]
+	sigValue := pt[sigPayloadEnd:]
+
+	verified, err := ci.dKey.DecryptDanger(out, sigPayload, sigValue, c, nb)
+	if err != nil {
+		return
+	}
+	if !ci.window.Update(f.l, c) {
+		return
+	}
+
+	f.handleHostRoaming(hostinfo, via)
+	f.connectionManager.In(hostinfo)
+
+	// sigPayload is [inner_encrypted_header(16)]
+	if len(sigPayload) < 16 {
+		return
+	}
+	innerHdr := sigPayload[:16]
+
+	var innerDecHdr [16]byte
+	if block := f.pki.HeaderBlock(); block != nil {
+		block.Decrypt(innerDecHdr[:], innerHdr)
+	} else {
+		return
+	}
+	innerSessionID := binary.BigEndian.Uint32(innerDecHdr[0:4])
+	if innerHI := f.hostMap.QueryIndex(innerSessionID); innerHI != nil && innerHI.ConnectionState != nil {
+		f.processDataPacketV2(via, innerHI, append(innerHdr, verified...), innerDecHdr, nb, out, nil, nil, q, localCache)
+	}
+}
+
+func (f *Interface) handleOutsideRelayPacketOld(hostinfo *HostInfo, via ViaSender, out []byte, packet []byte, h *header.H, fwPacket *firewall.Packet, lhf *LightHouseHandler, nb []byte, q int, localCache firewall.ConntrackCache) {
 	// The entire body is sent as AD, not encrypted.
 	// The packet consists of a 16-byte parsed Nebula header, Associated Data-protected payload, and a trailing 16-byte AEAD signature value.
 	// The packet is guaranteed to be at least 16 bytes at this point, b/c it got past the h.Parse() call above. If it's
