@@ -496,12 +496,16 @@ func (lh *LightHouse) GetPeerCert(vpnAddr netip.Addr) ([]byte, bool) {
 	lh.RLock()
 	entry, ok := lh.peerCerts[vpnAddr]
 	lh.RUnlock()
-	if !ok || time.Since(entry.addedAt) > peerCertTTL {
-		if ok {
-			lh.Lock()
+	if !ok {
+		return nil, false
+	}
+	if time.Since(entry.addedAt) > peerCertTTL {
+		lh.Lock()
+		current, still := lh.peerCerts[vpnAddr]
+		if still && current == entry {
 			delete(lh.peerCerts, vpnAddr)
-			lh.Unlock()
 		}
+		lh.Unlock()
 		return nil, false
 	}
 	return entry.bytes, true

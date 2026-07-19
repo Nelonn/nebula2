@@ -183,9 +183,6 @@ func labeledExpand(prk []byte, label string, info []byte, length int, suiteID []
 	}
 	return out
 }
-
-
-
 func computeSuiteID(suite *HPKESuite) []byte {
 	id := make([]byte, 10)
 	id[0] = 'H'; id[1] = 'P'; id[2] = 'K'; id[3] = 'E'

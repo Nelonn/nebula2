@@ -304,15 +304,25 @@ func (f *Interface) SendVia(via *HostInfo,
 	plainHdr[5] = byte(header.MessageRelay)
 	binary.BigEndian.PutUint64(plainHdr[6:14], c)
 
-	if block := f.pki.HeaderBlock(); block != nil {
-		if len(out) < 16 {
-			out = out[:cap(out)]
+	block := f.pki.HeaderBlock()
+	if block == nil {
+		if noiseutil.EncryptLockNeeded {
+			via.ConnectionState.writeLock.Unlock()
 		}
-		block.Encrypt(out[:16], plainHdr[:])
-	} else {
-		if noiseutil.EncryptLockNeeded { via.ConnectionState.writeLock.Unlock() }
+		via.logger(f.l).Error("SendVia: no header block configured, dropping relay packet")
 		return
 	}
+	if cap(out) < 16 {
+		if noiseutil.EncryptLockNeeded {
+			via.ConnectionState.writeLock.Unlock()
+		}
+		via.logger(f.l).Error("SendVia: out buffer too small for relay header", "cap", cap(out))
+		return
+	}
+	if len(out) < 16 {
+		out = out[:16]
+	}
+	block.Encrypt(out[:16], plainHdr[:])
 	f.connectionManager.Out(via)
 
 	// Append AD (inner encrypted packet) after the relay header.
@@ -371,13 +381,23 @@ func (f *Interface) sendNoMetrics(t header.MessageType, st header.MessageSubType
 	plainHdr[5] = byte(st)
 	binary.BigEndian.PutUint64(plainHdr[6:14], c)
 
-	if block := f.pki.HeaderBlock(); block != nil {
-		block.Encrypt(out[:16], plainHdr[:])
-		out = out[:16]
-	} else {
-		if noiseutil.EncryptLockNeeded { ci.writeLock.Unlock() }
+	block := f.pki.HeaderBlock()
+	if block == nil {
+		if noiseutil.EncryptLockNeeded {
+			ci.writeLock.Unlock()
+		}
+		hostinfo.logger(f.l).Error("sendNoMetrics: no header block configured, dropping packet")
 		return
 	}
+	if cap(out) < 16 {
+		if noiseutil.EncryptLockNeeded {
+			ci.writeLock.Unlock()
+		}
+		hostinfo.logger(f.l).Error("sendNoMetrics: out buffer too small for header", "cap", cap(out))
+		return
+	}
+	block.Encrypt(out[:16], plainHdr[:])
+	out = out[:16]
 	f.connectionManager.Out(hostinfo)
 
 	// Query our LH if we haven't since the last time we've been rebound, this will cause the remote to punch against

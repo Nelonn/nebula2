@@ -195,7 +195,8 @@ func (m *Machine) ProcessPacket(out, packet []byte) ([]byte, *Result, error) {
 		var err error
 
 		if !m.initiator {
-			ctx, err = hpke.SetupBaseR(enc, cred.hpkePriv, []byte("nebula-hpke-msg1"), suite)
+			info := hpkeInfo("nebula-hpke-msg1", nil, cred.HPKEPub)
+			ctx, err = hpke.SetupBaseR(enc, cred.hpkePriv, info, suite)
 			if err != nil {
 				return nil, nil, fmt.Errorf("hpke base: %w", err)
 			}
@@ -206,7 +207,10 @@ func (m *Machine) ProcessPacket(out, packet []byte) ([]byte, *Result, error) {
 				m.failed = true
 				return nil, nil, fmt.Errorf("no remote hpke key for auth decryption")
 			}
-			ctx, err = hpke.SetupAuthR(enc, cred.hpkePriv, pkS, []byte("nebula-hpke-msg2"), suite)
+			// msg2: responder is AuthEncap sender (pkS = responder pub known to us as remoteHPKEPub),
+			// we (initiator) are the recipient. info = label + responder_pub + initiator_pub.
+			info := hpkeInfo("nebula-hpke-msg2", pkS, cred.HPKEPub)
+			ctx, err = hpke.SetupAuthR(enc, cred.hpkePriv, pkS, info, suite)
 			if err != nil {
 				return nil, nil, fmt.Errorf("hpke auth: %w", err)
 			}
@@ -270,7 +274,10 @@ func (m *Machine) respond(out []byte) ([]byte, error) {
 		return nil, fmt.Errorf("no peer HPKE public key for auth response")
 	}
 
-	ctx, enc, err := hpke.SetupAuthS(pkR, cred.hpkePriv, []byte("nebula-hpke-msg2"), suite)
+	// msg2: responder (us) is AuthEncap sender, initiator (pkR) is recipient.
+	// info = label + our_pub (sender) + initiator_pub (recipient).
+	info := hpkeInfo("nebula-hpke-msg2", cred.HPKEPub, pkR)
+	ctx, enc, err := hpke.SetupAuthS(pkR, cred.hpkePriv, info, suite)
 	if err != nil {
 		return nil, fmt.Errorf("hpke auth setup: %w", err)
 	}
@@ -506,7 +513,9 @@ func (m *Machine) initiateEncrypt(out []byte, remoteHPKEPub []byte, cred *Creden
 		return nil, fmt.Errorf("hpke suite not configured")
 	}
 
-	ctx, enc, err := hpke.SetupBaseS(remoteHPKEPub, []byte("nebula-hpke-msg1"), suite)
+	// msg1: Base KEM — sender is anonymous, info binds only the recipient pub.
+	info := hpkeInfo("nebula-hpke-msg1", nil, remoteHPKEPub)
+	ctx, enc, err := hpke.SetupBaseS(remoteHPKEPub, info, suite)
 	if err != nil {
 		return nil, fmt.Errorf("hpke setup: %w", err)
 	}
@@ -528,4 +537,18 @@ func (m *Machine) initiateEncrypt(out []byte, remoteHPKEPub []byte, cred *Creden
 
 	m.step++
 	return out, nil
+}
+
+// hpkeInfo builds the HPKE `info` parameter by binding a label, the sender
+// public key, and the recipient public key together. This prevents replay and
+// cross-host forwarding attacks by tying each ciphertext to a specific
+// (sender, recipient) pair.
+func hpkeInfo(label string, senderPub, recipientPub []byte) []byte {
+	out := make([]byte, 0, len(label)+1+len(senderPub)+1+len(recipientPub))
+	out = append(out, []byte(label)...)
+	out = append(out, 0x00)
+	out = append(out, senderPub...)
+	out = append(out, 0x00)
+	out = append(out, recipientPub...)
+	return out
 }

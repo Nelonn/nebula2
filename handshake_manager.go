@@ -153,6 +153,19 @@ func (hm *HandshakeManager) Run(ctx context.Context) {
 	}
 }
 
+// hpkeInfoMsg1 builds the HPKE info for msg1 (unauthenticated KEM encap).
+// Mirrors hpkeInfo("nebula-hpke-msg1", nil, recipientPub) in handshake/machine.go.
+// The sender is unknown at this point, so senderPub is omitted (zero-length).
+func hpkeInfoMsg1(recipientPub []byte) []byte {
+	const label = "nebula-hpke-msg1"
+	out := make([]byte, 0, len(label)+2+len(recipientPub))
+	out = append(out, []byte(label)...)
+	out = append(out, 0x00)
+	out = append(out, 0x00)
+	out = append(out, recipientPub...)
+	return out
+}
+
 // TrialDecap attempts to interpret a headerless packet as an HPKE handshake
 // msg1: [enc] + [ciphertext]. Returns true if decap succeeded and a handshake was initiated.
 // Rate-limited to prevent CPU-based DoS from random packets.
@@ -187,7 +200,8 @@ func (hm *HandshakeManager) TrialDecap(via ViaSender, packet []byte) bool {
 	enc := packet[:encLen]
 	ct := packet[encLen:]
 
-	ctx, err := hpke.SetupBaseR(enc, cred.GetHPKEPriv(), []byte("nebula-hpke-msg1"), suite)
+	info := hpkeInfoMsg1(cred.HPKEPub)
+	ctx, err := hpke.SetupBaseR(enc, cred.GetHPKEPriv(), info, suite)
 	if err != nil {
 		return false
 	}
@@ -713,7 +727,9 @@ func (hm *HandshakeManager) buildStage0Packet(hh *HandshakeHostInfo) bool {
 	if len(remoteHPKEPub) == 0 {
 		hm.f.l.Debug("No remote HPKE public key, will retry after lighthouse query",
 			"vpnAddrs", hh.hostinfo.vpnAddrs)
-		hm.lightHouse.QueryServer(hh.hostinfo.vpnAddrs[0])
+		if len(hh.hostinfo.vpnAddrs) > 0 {
+			hm.lightHouse.QueryServer(hh.hostinfo.vpnAddrs[0])
+		}
 		return false
 	}
 
