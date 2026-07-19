@@ -296,42 +296,37 @@ func (f *Interface) SendVia(via *HostInfo,
 	}
 	c := via.ConnectionState.messageCounter.Add(1)
 
-	// Build encrypted relay header
+	// Write encrypted relay header at the start of `out`.
+	// Wire format: [encrypted_relay_header(16)] + [ad] + [AEAD_tag]
 	var plainHdr [16]byte
 	binary.BigEndian.PutUint32(plainHdr[0:4], relay.RemoteIndex)
 	plainHdr[4] = byte(header.Message)
 	plainHdr[5] = byte(header.MessageRelay)
 	binary.BigEndian.PutUint64(plainHdr[6:14], c)
+
 	if block := f.pki.HeaderBlock(); block != nil {
+		if len(out) < 16 {
+			out = out[:cap(out)]
+		}
 		block.Encrypt(out[:16], plainHdr[:])
-		out = out[:16]
 	} else {
 		if noiseutil.EncryptLockNeeded { via.ConnectionState.writeLock.Unlock() }
 		return
 	}
 	f.connectionManager.Out(via)
 
-	if len(out)+len(ad)+via.ConnectionState.eKey.Overhead() > cap(out) {
-		if noiseutil.EncryptLockNeeded {
-			via.ConnectionState.writeLock.Unlock()
-		}
-		via.logger(f.l).Error("SendVia out buffer not large enough for relay",
-			"outCap", cap(out),
-			"payloadLen", len(ad),
-			"headerLen", len(out),
-			"cipherOverhead", via.ConnectionState.eKey.Overhead(),
-		)
+	// Append AD (inner encrypted packet) after the relay header.
+	// `out` has the header at [0:16]. Extend by len(ad).
+	overhead := via.ConnectionState.eKey.Overhead()
+	needed := 16 + len(ad) + overhead
+	if cap(out) < needed {
+		if noiseutil.EncryptLockNeeded { via.ConnectionState.writeLock.Unlock() }
 		return
 	}
+	out = out[:16+len(ad)]
 
-	// The header bytes are written to the 'out' slice; Grow the slice to hold the header and associated data payload.
-	offset := len(out)
-	out = out[:offset+len(ad)]
-
-	// In one call path, the associated data _is_ already stored in out. In other call paths, the associated data must
-	// be copied into 'out'.
 	if !nocopy {
-		copy(out[offset:], ad)
+		copy(out[16:], ad)
 	}
 
 	var err error

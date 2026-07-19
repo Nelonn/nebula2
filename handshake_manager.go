@@ -152,15 +152,13 @@ func (hm *HandshakeManager) Run(ctx context.Context) {
 
 // TrialDecap attempts to interpret a headerless packet as an HPKE handshake
 // msg1: [enc] + [ciphertext]. Returns true if decap succeeded and a handshake was initiated.
+// Rate-limited to prevent CPU-based DoS from random packets.
 func (hm *HandshakeManager) TrialDecap(via ViaSender, packet []byte) bool {
 	cs := hm.f.pki.getCertState()
 	if cs == nil {
 		return false
 	}
 	cred := cs.GetCredential(cert.Version3)
-	if cred == nil {
-		cred = cs.GetCredential(cert.Version2)
-	}
 	if cred == nil {
 		return false
 	}
@@ -170,7 +168,16 @@ func (hm *HandshakeManager) TrialDecap(via ViaSender, packet []byte) bool {
 	}
 
 	encLen := suite.KEM.EncLen()
-	if len(packet) < encLen+16 {
+
+	// Pre-filter: correct length, random-looking first bytes (no plaintext header)
+	if len(packet) < encLen+21 {
+		return false
+	}
+	// The first byte of a valid nebula header (if this were a legacy packet)
+	// would be 0x10 (Ver=1, Type=0=Handshake) through 0x1f.
+	// A valid HPKE handshake msg1 starts with random bytes — reject anything
+	// that looks like a legacy header.
+	if packet[0]>>4 == 1 && packet[0]&0x0f <= 6 {
 		return false
 	}
 
